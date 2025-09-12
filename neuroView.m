@@ -1261,26 +1261,43 @@ updateDisplayMode();
                     set(hText, 'String', sprintf('State saved to:\n%s', savePath));
                 catch ME, set(hText, 'String', sprintf('Error saving .mat:\n%s', ME.message)); end
                 
-            elseif filterIndex == 2 % Save .avi video
+            elseif filterIndex == 2 % Save .avi video (high-res upscaled)
                 set(hText, 'String', 'Saving video...'); drawnow;
                 try
                     speedMultiplier = [0.5, 1, 2, 4, 8, 16];
                     v = VideoWriter(savePath, 'Motion JPEG AVI');
                     v.FrameRate = frameRate * speedMultiplier(get(hMovieSpeedDropdown,'Value'));
                     open(v);
-                    
-                    hWait = waitbar(0, 'Saving video...');
+
+                    % Determine export size preserving current FOV aspect and ensuring >=1080 in both dims
+                    xl = get(hAxes, 'XLim'); yl = get(hAxes, 'YLim');
+                    xspan = max(1, diff(xl)); yspan = max(1, diff(yl));
+                    aspect = xspan / yspan; % width/height
+                    targetH = 1080; targetW = round(targetH * aspect);
+                    if targetW < 1080
+                        targetW = 1080;
+                        targetH = max(1, round(targetW / aspect));
+                    end
+                    % Ensure even dimensions
+                    if mod(targetW,2)~=0, targetW = targetW+1; end
+                    if mod(targetH,2)~=0, targetH = targetH+1; end
+
+                    hWait = waitbar(0, sprintf('Saving video... 0/%d', numMovieFrames));
                     originalSliderValue = get(hSeekSlider, 'Value');
                     
                     for k = 1:numMovieFrames
                         updateFrame(k); drawnow;
-                        writeVideo(v, getframe(hAxes));
-                        waitbar(k/numMovieFrames, hWait);
+                        fr = getframe(hAxes);
+                        img = fr.cdata;
+                        % Upscale to target resolution while preserving aspect
+                        imgHi = imresize(img, [targetH targetW], 'bicubic');
+                        writeVideo(v, imgHi);
+                        if ishandle(hWait), waitbar(k/numMovieFrames, hWait, sprintf('Saving video... %d/%d', k, numMovieFrames)); end
                     end
                     
-                    close(v); close(hWait);
+                    close(v); if ishandle(hWait), close(hWait); end
                     updateFrame(round(originalSliderValue)); 
-                    set(hText, 'String', sprintf('Video saved to:\n%s', savePath));
+                    set(hText, 'String', sprintf('Video saved to:\n%s\nOutput size: %dx%d', savePath, targetW, targetH));
                 catch ME
                     if exist('hWait','var')&&ishandle(hWait), close(hWait); end
                     set(hText, 'String', sprintf('Error saving video:\n%s', ME.message));
