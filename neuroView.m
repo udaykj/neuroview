@@ -73,6 +73,9 @@ hContextSession = uicontrol('Parent', hContextPanel, 'Style', 'radiobutton', 'St
     'Position', [20 5 150 20], 'Value', 1, 'BackgroundColor', [0.94 0.94 0.94]);
 hContextLoaded = uicontrol('Parent', hContextPanel, 'Style', 'radiobutton', 'String', 'Loaded State', ...
     'Position', [250 5 150 20], 'Value', 0, 'Enable', 'off', 'BackgroundColor', [0.94 0.94 0.94]);
+% Info label to disambiguate which slot/mode is active
+hContextInfoLabel = uicontrol('Parent', hContextPanel, 'Style', 'text', 'String', 'Session: TIFF', ...
+    'Position', [20 25 390 15], 'HorizontalAlignment', 'left', 'BackgroundColor', [0.94 0.94 0.94]);
 set(hContextPanel, 'SelectionChangedFcn', @switchOperatingContextCallback);
 
 
@@ -1356,6 +1359,7 @@ updateDisplayMode();
                 updateGUIFromState(appState.loadedStateSnapshot);
                 showInfoCallback(); 
                 set(hModeSelector, 'Enable', 'off');
+                set(hContextInfoLabel, 'String', sprintf('Loaded: %s', loadedMode));
 
                 if ~appState.loadedStateSnapshot.reloadRaw
                     setProcessingPanelEnabled(false);
@@ -1414,6 +1418,7 @@ updateDisplayMode();
             end
             showInfoCallback();
             set(hModeSelector, 'Enable', 'on');
+            set(hContextInfoLabel, 'String', sprintf('Session: %s', appState.currentMode));
             % Re-enable load buttons for the active session mode
             if strcmp(appState.currentMode,'TIFF')
                 set(findobj(hTiffLoadPanel,'Type','uicontrol'),'Enable','on');
@@ -1640,7 +1645,8 @@ updateDisplayMode();
         oldText = get(hText, 'String');
         if ~iscell(oldText), oldText = {oldText}; end
         if contains(oldText{1}, 'Welcome!'), oldText = {}; end
-        set(hText, 'String', [oldText; {newText}]);
+        % Prepend latest status to the top; metadata appenders will still set full text when needed
+        set(hText, 'String', [{newText}; oldText]);
         drawnow;
     end
     
