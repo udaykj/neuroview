@@ -27,5 +27,44 @@ function neuroView()
 
 % --- Main State Variables ---
 % ... existing code ...
+appState.sessionMode = 'TIFF'; % Remembers the mode of the current session when viewing a loaded state
+
+% === New Slot-Based Architecture ===
+appState.currentContext = 'Current'; % 'Current' or 'Loaded'
+appState.Slots.Current.TIFF   = appState.TIFF;   % independent current TIFF workspace
+appState.Slots.Current.Neural = appState.Neural; % independent current Neural workspace
+appState.Slots.Loaded.TIFF    = [];              % will hold a loaded TIFF state (struct)
+appState.Slots.Loaded.Neural  = [];              % will hold a loaded Neural state (struct)
+% ===================================
+
+% Helper to get slot fieldnames
+getSlotName = @(mode,context) sprintf('%s.%s',context,mode);
+
+    function cacheActiveToSlot()
+        % Save the active appState.TIFF/Neural into the correct slot
+        slotFld = getSlotName(appState.currentMode, appState.currentContext);
+        switch appState.currentMode
+            case 'TIFF'
+                appState.Slots.(appState.currentContext).(appState.currentMode) = appState.TIFF;
+            case 'Neural'
+                appState.Slots.(appState.currentContext).(appState.currentMode) = appState.Neural;
+        end
+    end
+
+    function pullSlotToActive()
+        % Load the appropriate slot struct into appState.TIFF / Neural so existing code runs unchanged
+        slotStruct = appState.Slots.(appState.currentContext).(appState.currentMode);
+        if isempty(slotStruct)
+            % Slot is empty, keep existing defaults
+            return;
+        end
+        if strcmp(appState.currentMode,'TIFF')
+            appState.TIFF = slotStruct;
+        else
+            appState.Neural = slotStruct;
+        end
+    end
+
+% --- GUI Setup ---
 
 end
