@@ -1,0 +1,32 @@
+=== NEUROVIEW V2 - DOWNLOAD THESE 2 FILES ===
+
+1. StateManagerV2.m - The state management class
+2. Either:
+   a) neuroView_v2_demo.m - Working demo to test the 4-state system
+   OR
+   b) CONVERT_TO_V2.m - Script to convert your v1 file automatically
+
+=== HOW TO USE ===
+
+Option A - Try the Demo:
+1. Put StateManagerV2.m in your MATLAB folder
+2. Put neuroView_v2_demo.m in your MATLAB folder  
+3. Run: neuroView_v2_demo()
+
+Option B - Convert Your v1:
+1. Put StateManagerV2.m in your MATLAB folder
+2. Put CONVERT_TO_V2.m in your MATLAB folder
+3. Put your original neuroView.m in the same folder
+4. Run: CONVERT_TO_V2('neuroView.m')
+5. This creates neuroView_v2.m automatically
+
+=== THAT'S IT! ===
+
+The demo shows the 4-state system working.
+The converter automatically updates your v1 code.
+
+Download:
+- StateManagerV2.m (required)
+- neuroView_v2_demo.m (to test)
+OR
+- CONVERT_TO_V2.m (to convert your code)
