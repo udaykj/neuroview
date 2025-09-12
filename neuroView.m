@@ -1209,7 +1209,7 @@ updateDisplayMode();
             wasPlaying = strcmp(get(hPlayPauseBtn, 'String'), 'Pause');
 
             [fileName, pathName, filterIndex] = uiputfile(...
-                {'*.mat', 'State & Movie (*.mat)'; '*.avi', 'Video (*.avi)'}, 'Save As');
+                {'*.mat', 'State & Movie (*.mat)'; '*.avi', 'Video (*.avi)'; '*.mp4', 'MP4 H.264 (*.mp4)'}, 'Save As');
             if isequal(fileName, 0)
                 if wasPlaying, start(movieTimer); end % Resume if cancelled
                 return; 
@@ -1261,45 +1261,136 @@ updateDisplayMode();
                     set(hText, 'String', sprintf('State saved to:\n%s', savePath));
                 catch ME, set(hText, 'String', sprintf('Error saving .mat:\n%s', ME.message)); end
                 
-            elseif filterIndex == 2 % Save .avi video (high-res upscaled)
+            elseif filterIndex == 2 || filterIndex == 3 % Save video (AVI or MP4) with offscreen rendering
                 set(hText, 'String', 'Saving video...'); drawnow;
                 try
+                    % Choose export resolution
+                    resOptions = {'Native','1080p','1440p','2160p'};
+                    [resIdx, ok] = listdlg('PromptString','Select export resolution:', 'SelectionMode','single', 'ListString', resOptions, 'InitialValue', 2);
+                    if ~ok, if wasPlaying, start(movieTimer); end, return; end
+                    resChoice = resOptions{resIdx};
+
+                    % Determine codec from extension
+                    [~,~,ext] = fileparts(savePath);
+                    if strcmpi(ext,'.mp4')
+                        v = VideoWriter(savePath, 'MPEG-4');
+                    else
+                        v = VideoWriter(savePath, 'Motion JPEG AVI');
+                    end
                     speedMultiplier = [0.5, 1, 2, 4, 8, 16];
-                    v = VideoWriter(savePath, 'Motion JPEG AVI');
-                    v.FrameRate = frameRate * speedMultiplier(get(hMovieSpeedDropdown,'Value'));
+                    speedVal = speedMultiplier(get(hMovieSpeedDropdown,'Value'));
+                    v.FrameRate = frameRate * speedVal;
+                    if isprop(v,'Quality'), v.Quality = 95; end
                     open(v);
 
-                    % Determine export size preserving current FOV aspect and ensuring >=1080 in both dims
+                    % Determine aspect and target size
+                    modeOptions = get(displayHandles.modeDropdown, 'String');
+                    selectedMode = modeOptions{get(displayHandles.modeDropdown, 'Value')};
+                    isTiffMode = strcmp(generationState.mode, 'TIFF');
+                    nativeW = []; nativeH = [];
+                    if isTiffMode && strcmp(selectedMode,'Image')
+                        % Native image dimensions
+                        nativeH = size(precomputedMovie,1); nativeW = size(precomputedMovie,2);
+                    end
+
+                    % Fallback aspect from axes limits
                     xl = get(hAxes, 'XLim'); yl = get(hAxes, 'YLim');
                     xspan = max(1, diff(xl)); yspan = max(1, diff(yl));
                     aspect = xspan / yspan; % width/height
-                    targetH = 1080; targetW = round(targetH * aspect);
-                    if targetW < 1080
-                        targetW = 1080;
-                        targetH = max(1, round(targetW / aspect));
-                    end
-                    % Ensure even dimensions
-                    if mod(targetW,2)~=0, targetW = targetW+1; end
-                    if mod(targetH,2)~=0, targetH = targetH+1; end
 
+                    % Compute target size
+                    function [tw,th] = computeTarget(aspect, nativeW, nativeH, resChoice)
+                        switch resChoice
+                            case 'Native'
+                                if ~isempty(nativeW) && ~isempty(nativeH)
+                                    tw = nativeW; th = nativeH; return;
+                                else
+                                    % Default to 1080p equivalent if native unknown
+                                    th = 1080; tw = round(th * aspect);
+                                end
+                            case '1080p'
+                                th = 1080; tw = round(th * aspect);
+                            case '1440p'
+                                th = 1440; tw = round(th * aspect);
+                            case '2160p'
+                                th = 2160; tw = round(th * aspect);
+                            otherwise
+                                th = 1080; tw = round(th * aspect);
+                        end
+                        if tw < 1, tw = 1; end
+                        if th < 1, th = 1; end
+                        % Make even for codecs
+                        if mod(tw,2)~=0, tw = tw+1; end
+                        if mod(th,2)~=0, th = th+1; end
+                    end
+                    [targetW, targetH] = computeTarget(aspect, nativeW, nativeH, resChoice);
+
+                    % Setup offscreen figure/axes
+                    hOffFig = figure('Visible','off','Units','pixels','Position',[100 100 targetW targetH], 'Color','k');
+                    hOffAx = axes('Parent',hOffFig, 'Units','normalized','Position',[0 0 1 1]);
+                    axis(hOffAx,'off');
+                    set(hOffAx,'YDir','normal');
+                    colormap(hOffAx, colormap(hAxes));
+                    caxis(hOffAx, get(hAxes,'CLim'));
+
+                    % Plotted object handles
+                    offPlot = [];
+                    hTextTime = []; hTextSpeed = [];
+
+                    % Helpers to initialize/update frame
+                    function initOffscreen(k)
+                        data = getModeDataForFrame(k);
+                        if strcmp(selectedMode,'Cells')
+                            offPlot = scatter(hOffAx, generationState.physicalCoords(:,1), generationState.physicalCoords(:,2), ...
+                                get(markerHandles.sizeSlider,'Value'), data, 'filled', 'Marker', markerHandles.shapeValues{get(markerHandles.shapeDropdown,'Value')});
+                        else
+                            offPlot = imagesc(hOffAx, 'CData', data);
+                            % Match spatial scaling
+                            if isTiffMode
+                                T = generationState.TIFF;
+                                physW = T.pixelWidth / T.x_pixels_per_unit; physH = T.pixelHeight / T.y_pixels_per_unit;
+                                set(offPlot,'XData',[0 physW],'YData',[0 physH]);
+                            else
+                                N = generationState.Neural; set(offPlot,'XData',N.plotXLim,'YData',N.plotYLim);
+                            end
+                        end
+                        setupPlotAxes(hOffAx, generationState.mode, generationState.TIFF, generationState.Neural);
+                        axis(hOffAx,'off');
+                        % Overlays
+                        hTextTime = text(hOffAx, 0.01, 0.03, '', 'Units','normalized','Color','w','FontWeight','bold','BackgroundColor','k');
+                        hTextSpeed = text(hOffAx, 0.99, 0.03, '', 'Units','normalized','Color','w','FontWeight','bold','BackgroundColor','k','HorizontalAlignment','right');
+                    end
+                    function updateOffscreen(k)
+                        data = getModeDataForFrame(k);
+                        if strcmp(selectedMode,'Cells')
+                            set(offPlot,'CData', data);
+                        else
+                            set(offPlot,'CData', data);
+                        end
+                        % Update overlays
+                        tSec = (k-1) / frameRate; tStr = sprintf('t = %.1fs', round(tSec*10)/10);
+                        spStr = sprintf('%gx', speedVal);
+                        set(hTextTime,'String', tStr); set(hTextSpeed,'String', spStr);
+                    end
+
+                    % Render loop
                     hWait = waitbar(0, sprintf('Saving video... 0/%d', numMovieFrames));
                     originalSliderValue = get(hSeekSlider, 'Value');
-                    
+                    initOffscreen(1);
                     for k = 1:numMovieFrames
-                        updateFrame(k); drawnow;
-                        fr = getframe(hAxes);
-                        img = fr.cdata;
-                        % Upscale to target resolution while preserving aspect
-                        imgHi = imresize(img, [targetH targetW], 'bicubic');
-                        writeVideo(v, imgHi);
+                        updateOffscreen(k); drawnow;
+                        fr = getframe(hOffFig);
+                        writeVideo(v, fr.cdata);
                         if ishandle(hWait), waitbar(k/numMovieFrames, hWait, sprintf('Saving video... %d/%d', k, numMovieFrames)); end
                     end
                     
                     close(v); if ishandle(hWait), close(hWait); end
+                    if isgraphics(hOffFig), close(hOffFig); end
                     updateFrame(round(originalSliderValue)); 
                     set(hText, 'String', sprintf('Video saved to:\n%s\nOutput size: %dx%d', savePath, targetW, targetH));
                 catch ME
                     if exist('hWait','var')&&ishandle(hWait), close(hWait); end
+                    try, if isgraphics(hOffFig), close(hOffFig); end, end
                     set(hText, 'String', sprintf('Error saving video:\n%s', ME.message));
                 end
             end
