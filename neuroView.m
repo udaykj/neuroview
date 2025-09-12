@@ -42,10 +42,14 @@ appState.Neural = struct('dataFilePath','','coordsFilePath','','tiffFolderPath',
     'pixelHeight',512,'x_pixels_per_um',1,'y_pixels_per_um',1);
 
 % Shared state & context management
-appState.uiStateCache = struct(); % To save UI settings on mode switch
-appState.sessionCache = struct('data', [], 'fingerprint', []); % For caching processed data
-appState.sessionState = []; % Snapshot of appState before loading a file state
-appState.loadedStateSnapshot = []; % The state loaded from a file
+appState.uiStateCache = struct(); % To save UI settings on mode switch (per-mode, for Current Session)
+% Four-slot architecture: session (TIFF/Neural) and loaded (TIFF/Neural)
+appState.loaded = struct('TIFF', [], 'Neural', []); % Dedicated loaded slots
+% Per-slot caches
+appState.cache = struct( ...
+    'session', struct('TIFF', struct('data', [], 'fingerprint', []), 'Neural', struct('data', [], 'fingerprint', [])), ...
+    'loaded',  struct('TIFF', struct('data', [], 'fingerprint', []), 'Neural', struct('data', [], 'fingerprint', [])) ...
+);
 appState.sessionMode = 'TIFF'; % Remembers the mode of the current session when viewing a loaded state
 
 % --- GUI Setup ---
@@ -191,8 +195,8 @@ updateDisplayMode();
         % 4. Restore the cached UI state for the new mode
         restoreUIStateForCurrentMode();
         
-        % 5. Invalidate Session Cache and Update Display
-        appState.sessionCache = struct('data', [], 'fingerprint', []);
+        % 5. Invalidate Session Cache for this mode and Update Display
+        appState.cache.session.(appState.currentMode) = struct('data', [], 'fingerprint', []);
         updateDisplayInfo();
     end
 
@@ -206,24 +210,35 @@ updateDisplayMode();
             loadedData = load(loadPath);
             if ~isfield(loadedData, 'state'), error('Invalid state file.'); end
             
-            % --- Take snapshot of current session BEFORE overwriting ---
-            appState.sessionMode = appState.currentMode; % Remember the session's mode
-            cacheCurrentUIState(appState.currentMode); % Save UI settings for current session
-            
+            % Validate mode-awareness: only accept state matching current mode
+            currentUIMode = appState.currentMode; % 'TIFF' or 'Neural'
             state = loadedData.state;
+            if ~isfield(state,'mode') || isempty(state.mode)
+                error('Loaded state is missing a valid mode.');
+            end
+            if ~strcmp(state.mode, currentUIMode)
+                error('Loaded state mode (%s) does not match current mode (%s). Switch mode and try again.', state.mode, currentUIMode);
+            end
             
-            % --- Get checkbox value ---
-            isTiffMode = strcmp(state.mode, 'TIFF');
-            if isTiffMode, reloadRaw = get(hReloadDataCheckbox_Tiff, 'Value');
-            else, reloadRaw = get(hReloadDataCheckbox_Neural, 'Value'); end
+            % --- Cache current session UI BEFORE switching context ---
+            appState.sessionMode = appState.currentMode; % Remember the session's mode
+            cacheCurrentUIState(appState.currentMode, 'Session'); % Save UI settings for current session
             
-            state.reloadRaw = reloadRaw; % Tag the state with reload status
-            appState.loadedStateSnapshot = state; % Store the entire loaded state
+            % Attach reloadRaw from the correct checkbox for this mode
+            if strcmp(state.mode,'TIFF')
+                reloadRaw = get(hReloadDataCheckbox_Tiff, 'Value');
+            else
+                reloadRaw = get(hReloadDataCheckbox_Neural, 'Value');
+            end
+            state.reloadRaw = reloadRaw;
             
-            % Activate the Loaded State context
+            % Place into the dedicated loaded slot
+            appState.loaded.(state.mode) = state;
+            
+            % Enable and switch to Loaded State context
             set(hContextLoaded, 'Enable', 'on', 'Value', 1);
             set(hContextSession, 'Value', 0);
-            switchOperatingContextCallback(); % Manually trigger update
+            switchOperatingContextCallback();
 
         catch ME
             set(hText, 'String', sprintf('Error loading state file:\n%s', ME.message));
@@ -233,11 +248,14 @@ updateDisplayMode();
     function showInfoCallback(~, ~)
         % This now shows info based on the current context
         isInLoadedContext = get(hContextLoaded, 'Value') == 1;
-        
-        if isInLoadedContext && ~isempty(appState.loadedStateSnapshot)
-            stateToShow = appState.loadedStateSnapshot;
+        currentMode = appState.currentMode;
+        if isInLoadedContext && ~isempty(appState.loaded.(currentMode))
+            stateToShow = appState.loaded.(currentMode);
         else
-            stateToShow = appState; % Use current session state
+            % Build a lightweight state object reflecting current session
+            stateToShow.mode = appState.currentMode;
+            stateToShow.TIFF = appState.TIFF;
+            stateToShow.Neural = appState.Neural;
         end
 
         mode = getStateMode(stateToShow);
@@ -257,17 +275,26 @@ updateDisplayMode();
         avgData = []; localState = []; playerStateToApply = [];
         
         isInLoadedContext = get(hContextLoaded, 'Value') == 1;
+        currentMode = appState.currentMode;
+        activeLoaded = [];
+        if isInLoadedContext, activeLoaded = appState.loaded.(currentMode); end
 
-        if isInLoadedContext && ~isempty(appState.loadedStateSnapshot)
-            set(hText, 'String', 'Averaging pre-loaded movie data...'); drawnow;
-            
-            localState = appState.loadedStateSnapshot;
+        if isInLoadedContext && ~isempty(activeLoaded)
+            localState = activeLoaded;
             playerStateToApply = ifisfield(localState, 'playerState');
-            isTiffMode = strcmp(localState.mode, 'TIFF');
-            timeDim = ifelse(isTiffMode, 3, 2);
-            avgData = mean(localState.movieData, timeDim);
+            if isfield(localState,'reloadRaw') && localState.reloadRaw
+                [processedData, localState, success, errMsg] = getOrProcessData('loaded');
+                if ~success, set(hText, 'String', errMsg); return; end
+                appendToStatus('Averaging loaded-raw data...');
+                if strcmp(localState.mode, 'TIFF'), avgData = mean(processedData, 3); else, avgData = mean(processedData, 2); end
+            else
+                set(hText, 'String', 'Averaging pre-loaded movie data...'); drawnow;
+                isTiffMode = strcmp(localState.mode, 'TIFF');
+                timeDim = ifelse(isTiffMode, 3, 2);
+                avgData = mean(localState.movieData, timeDim);
+            end
         else
-            [processedData, localState, success, errMsg] = getOrProcessData();
+            [processedData, localState, success, errMsg] = getOrProcessData('session');
             if ~success, set(hText, 'String', errMsg); return; end
 
             appendToStatus('Averaging data...');
@@ -414,14 +441,24 @@ updateDisplayMode();
         generationState = [];
         
         isInLoadedContext = get(hContextLoaded, 'Value') == 1;
+        currentMode = appState.currentMode;
+        activeLoaded = [];
+        if isInLoadedContext, activeLoaded = appState.loaded.(currentMode); end
 
-        if isInLoadedContext && ~isempty(appState.loadedStateSnapshot)
-            generationState = appState.loadedStateSnapshot;
-            precomputedMovie = generationState.movieData;
+        if isInLoadedContext && ~isempty(activeLoaded)
+            generationState = activeLoaded;
             playerStateToApply = ifisfield(generationState, 'playerState');
-            set(hText, 'String', 'Playing pre-computed movie from loaded state...'); drawnow;
+            if isfield(generationState,'reloadRaw') && generationState.reloadRaw
+                [processedData, generationState, success, errMsg] = getOrProcessData('loaded');
+                if ~success, set(hText, 'String', errMsg); return; end
+                precomputedMovie = processedData;
+                set(hText, 'String', 'Playing re-computed movie from loaded state (raw enabled)...'); drawnow;
+            else
+                precomputedMovie = generationState.movieData;
+                set(hText, 'String', 'Playing pre-computed movie from loaded state...'); drawnow;
+            end
         else
-            [processedData, generationState, success, errMsg] = getOrProcessData();
+            [processedData, generationState, success, errMsg] = getOrProcessData('session');
             if ~success, set(hText, 'String', errMsg); return; end
             
             rollingAvg = round(str2double(get(hRollingAvgInput, 'String')));
@@ -440,52 +477,50 @@ updateDisplayMode();
     end
 
 %% --- DATA CACHING & PROCESSING ---
-    function [processedData, generationState, success, errMsg] = getOrProcessData()
+    function [processedData, generationState, success, errMsg] = getOrProcessData(contextKey)
         processedData = []; 
         generationState = [];
         success = false; 
         errMsg = '';
+        if nargin < 1 || isempty(contextKey), contextKey = ifelse(get(hContextLoaded,'Value')==1,'loaded','session'); end
 
-        % 1. Get current settings fingerprint
-        generationState = captureFullState();
+        % 1. Get current settings fingerprint from the right context
+        generationState = captureFullState(contextKey);
 
-        % 2. Check against cache
-        if isfield(appState, 'sessionCache') && ...
-           ~isempty(appState.sessionCache) && ...
-           isfield(appState.sessionCache, 'fingerprint') && ...
-           ~isempty(appState.sessionCache.fingerprint) && ...
-           isequaln(generationState, appState.sessionCache.fingerprint)
-            
-            % Cache Hit
+        % 2. Check against cache (per-context, per-mode)
+        modeKey = generationState.mode;
+        cacheSlot = appState.cache.(contextKey).(modeKey);
+        if isfield(cacheSlot, 'fingerprint') && ~isempty(cacheSlot.fingerprint) && isequaln(generationState, cacheSlot.fingerprint)
             appendToStatus('Using cached data...');
-            processedData = appState.sessionCache.data;
+            processedData = cacheSlot.data;
             success = true;
-            
-        else
-            % Cache Miss
-            if (strcmp(appState.currentMode, 'TIFF') && isempty(appState.TIFF.fullFilePath) && isempty(appState.TIFF.selectedFolderPath)) || ...
-               (strcmp(appState.currentMode, 'Neural') && (isempty(appState.Neural.psthsData) || isempty(appState.Neural.cellCoords) || isempty(appState.Neural.tiffFolderPath)))
-                errMsg = 'Please load all required data for the current mode first.';
-                if strcmp(appState.currentMode, 'Neural')
-                    errMsg = [errMsg sprintf('\n(Data, Coords, AND original TIFF folder are required.)')];
-                end
-                success = false;
-                return;
-            end
-
-            set(hText, 'String', 'Processing new data...'); drawnow;
-            [newData, procSuccess, procErrMsg] = getProcessedData();
-            
-            if procSuccess
-                appState.sessionCache.data = newData;
-                appState.sessionCache.fingerprint = generationState;
-                processedData = newData;
-                success = true;
-            else
-                errMsg = procErrMsg;
-                success = false;
-            end
+            return;
         end
+
+        % 3. Validate inputs for the generation state being processed
+        baseMode = generationState.mode;
+        baseTIFF = generationState.TIFF;
+        baseNeural = generationState.Neural;
+        missingTIFF = strcmp(baseMode, 'TIFF') && isempty(baseTIFF.fullFilePath) && isempty(baseTIFF.selectedFolderPath);
+        missingNeural = strcmp(baseMode, 'Neural') && (isempty(baseNeural.psthsData) || isempty(baseNeural.cellCoords) || isempty(baseNeural.tiffFolderPath));
+        if missingTIFF || missingNeural
+            errMsg = 'Please load all required data for the current mode first.';
+            if strcmp(baseMode, 'Neural')
+                errMsg = [errMsg sprintf('\n(Data, Coords, AND original TIFF folder are required.)')];
+            end
+            return;
+        end
+
+        set(hText, 'String', 'Processing new data...'); drawnow;
+        [newData, procSuccess, procErrMsg] = getProcessedData(generationState);
+        if ~procSuccess
+            errMsg = procErrMsg; return;
+        end
+
+        appState.cache.(contextKey).(modeKey).data = newData;
+        appState.cache.(contextKey).(modeKey).fingerprint = generationState;
+        processedData = newData;
+        success = true;
     end
 
 %% --- TIFF MODE SPECIFIC CALLBACKS ---
@@ -498,7 +533,7 @@ updateDisplayMode();
         T.fullFilePath = fullfile(pathName, fileName);
         T.selectedFolderPath = '';
         appState.loadedMovieData = []; appState.loadedPlayerState = [];
-        appState.sessionCache = struct('data', [], 'fingerprint', []); % Invalidate cache
+        appState.cache.session.TIFF = struct('data', [], 'fingerprint', []); % Invalidate cache for session TIFF
         appState.TIFF = T;
         
         set(hText, 'String', sprintf('Analyzing file:\n%s...', fileName)); drawnow;
@@ -518,7 +553,7 @@ updateDisplayMode();
         T.selectedFolderPath = folderName;
         T.fullFilePath = '';
         appState.loadedMovieData = []; appState.loadedPlayerState = [];
-        appState.sessionCache = struct('data', [], 'fingerprint', []); % Invalidate cache
+        appState.cache.session.TIFF = struct('data', [], 'fingerprint', []); % Invalidate cache for session TIFF
         
         set(hText, 'String', sprintf('Analyzing folder:\n%s...', folderName)); drawnow;
         try
@@ -555,7 +590,7 @@ updateDisplayMode();
                 error('Data must be 3D (N x t x R) and psths/psthsnp must be the same size.');
             end
             appState.Neural = N;
-            appState.sessionCache = struct('data', [], 'fingerprint', []); % Invalidate cache
+            appState.cache.session.Neural = struct('data', [], 'fingerprint', []); % Invalidate cache for session Neural
             set(hText, 'String', sprintf('Data loaded successfully from:\n%s', fileName)); drawnow;
             updateDisplayInfo();
         catch ME
@@ -579,7 +614,7 @@ updateDisplayMode();
             if ~ismatrix(coords) || size(coords, 2) ~= 2, error('Coordinates must be an N x 2 matrix.'); end
             N.cellCoords = coords;
             appState.Neural = N;
-            appState.sessionCache = struct('data', [], 'fingerprint', []); % Invalidate cache
+            appState.cache.session.Neural = struct('data', [], 'fingerprint', []); % Invalidate cache for session Neural
             set(hText, 'String', sprintf('Coordinates loaded successfully from:\n%s', fileName)); drawnow;
             updateDisplayInfo();
         catch ME
@@ -601,7 +636,7 @@ updateDisplayMode();
             firstTiffPath = fullfile(appState.Neural.tiffFolderPath, tiffFiles(1).name);
             processTiffMetadataForInfo_Neural(firstTiffPath); % This populates the rest of appState.Neural
             
-            appState.sessionCache = struct('data', [], 'fingerprint', []); % Invalidate cache
+            appState.cache.session.Neural = struct('data', [], 'fingerprint', []); % Invalidate cache for session Neural
             set(hText, 'String', sprintf('TIFF folder loaded successfully:\n%s', folderName)); drawnow;
             updateDisplayInfo();
         catch ME
@@ -629,7 +664,7 @@ updateDisplayMode();
             appState.TIFF.vareaFilePath = filePath;
             appState.Neural.vareaFilePath = filePath;
 
-            appState.sessionCache = struct('data', [], 'fingerprint', []); % Invalidate cache
+            appState.cache.session.TIFF = struct('data', [], 'fingerprint', []); % Invalidate cache for session TIFF
             set(hText, 'String', sprintf('Visual areas loaded from:\n%s', fileName)); drawnow;
             updateDisplayInfo();
         catch ME
@@ -641,14 +676,19 @@ updateDisplayMode();
 
 %% --- UNIFIED DATA PROCESSING ---
 
-    function [processedData, success, errMsg] = getProcessedData()
+    function [processedData, success, errMsg] = getProcessedData(generationState)
         processedData = []; success = false; errMsg = '';
         
-        % Step 1: Get raw trial-averaged data for the current mode
-        if strcmp(appState.currentMode, 'TIFF')
+        % Step 1: Get raw trial-averaged data for the provided generation state
+        modeNow = generationState.mode;
+        if strcmp(modeNow, 'TIFF')
             [trialAvgData, success_main, errMsg_main] = computeTrialAverageMovie_TIFF(get(hTrialInput, 'String'));
         else % Neural
+            % Temporarily use N from generationState to preprocess
+            N_bak = appState.Neural; % backup
+            appState.Neural = generationState.Neural; % use loaded/session neural state
             [F_session_processed, success_pre, errMsg_pre] = preprocessFullSession_Neural();
+            appState.Neural = N_bak; % restore
             if ~success_pre, errMsg = errMsg_pre; success=false; return; end
             [trialAvgData, success_main, errMsg_main] = computeTrialAverageData_Neural(get(hTrialInput, 'String'), F_session_processed);
         end
@@ -711,7 +751,7 @@ updateDisplayMode();
         end
         
         % Step 3: Apply spatial smoothing (for TIFF mode)
-        if strcmp(appState.currentMode, 'TIFF')
+        if strcmp(modeNow, 'TIFF')
             sigma_microns = str2double(get(hSmoothingWindowInput, 'String'));
             if ~isnan(sigma_microns) && sigma_microns > 0
                 appendToStatus(sprintf('Applying spatial smoothing (%.1f um)...', sigma_microns));
@@ -1164,28 +1204,39 @@ updateDisplayMode();
 
         if isLoadedContext
             % --- Switch TO Loaded State Context ---
-            if ~isempty(appState.loadedStateSnapshot)
-                loadedMode = getStateMode(appState.loadedStateSnapshot);
-                
+            cacheCurrentUIState(appState.currentMode, 'Session');
+            loadedState = appState.loaded.(appState.currentMode);
+            if ~isempty(loadedState)
+                loadedMode = getStateMode(loadedState);
                 % Update the dropdown, which will trigger the modeSwitchCallback
                 set(hModeSelector, 'Value', ifelse(strcmp(loadedMode, 'TIFF'), 1, 2));
-                modeSwitchCallback(hModeSelector); % This handles all control visibility updates
-                
-                % Now that UI is configured for the right mode, populate it with loaded state data
-                updateGUIFromState(appState.loadedStateSnapshot);
-                showInfoCallback(); 
+                modeSwitchCallback(hModeSelector); % Handles control visibility
+                % Populate UI with loaded state's UI
+                updateGUIFromState(loadedState);
+                showInfoCallback();
                 set(hModeSelector, 'Enable', 'off');
-
-                if ~appState.loadedStateSnapshot.reloadRaw
+                if ~isfield(loadedState,'reloadRaw') || ~loadedState.reloadRaw
                     setProcessingPanelEnabled(false);
                     appendToStatus('Switched to Loaded State (read-only).');
                 else
                     setProcessingPanelEnabled(true);
                     appendToStatus('Switched to Loaded State (raw data available).');
                 end
+            else
+                set(hModeSelector, 'Enable', 'off');
+                setProcessingPanelEnabled(false);
+                set(hText, 'String', sprintf('No loaded state available for %s mode.', appState.currentMode));
             end
         else
             % --- Switch BACK TO Session Context ---
+            % Persist UI into loaded slot before leaving
+            if ~isempty(appState.loaded.(appState.currentMode))
+                if strcmp(appState.currentMode,'TIFF')
+                    cacheCurrentUIState('TIFF', 'Loaded');
+                else
+                    cacheCurrentUIState('Neural', 'Loaded');
+                end
+            end
             % Restore the original session mode
             if isfield(appState, 'sessionMode') && ~isempty(appState.sessionMode)
                 appState.currentMode = appState.sessionMode;
@@ -1224,10 +1275,19 @@ updateDisplayMode();
         end
     end
 
-    function state = captureFullState()
+    function state = captureFullState(contextKey)
+        if nargin < 1 || isempty(contextKey)
+            if get(hContextLoaded,'Value')==1, contextKey='loaded'; else, contextKey='session'; end
+        end
         state.mode = appState.currentMode;
-        state.TIFF = appState.TIFF;
-        state.Neural = appState.Neural;
+        if strcmp(contextKey,'loaded') && ~isempty(appState.loaded.(state.mode))
+            fromLoaded = appState.loaded.(state.mode);
+            state.TIFF = ifisfield(fromLoaded, 'TIFF');
+            state.Neural = ifisfield(fromLoaded, 'Neural');
+        else
+            state.TIFF = appState.TIFF;
+            state.Neural = appState.Neural;
+        end
         state.frameRate = ifelse(strcmp(state.mode, 'TIFF'), state.TIFF.nativeFrameRate, state.Neural.nativeFrameRate);
 
         % Capture UI settings
@@ -1260,7 +1320,8 @@ updateDisplayMode();
         end
     end
 
-    function cacheCurrentUIState(modeToCache)
+    function cacheCurrentUIState(modeToCache, target)
+        if nargin < 2 || isempty(target), target='Session'; end
         mode = modeToCache; % Use passed-in mode to ensure correct cache slot is used
         S.rollingAvg = get(hRollingAvgInput, 'String');
         S.trials = get(hTrialInput, 'String');
@@ -1277,10 +1338,18 @@ updateDisplayMode();
             S.plane = get(hPlaneDropdown, 'Value');
             S.channel = get(hChannelDropdown, 'Value');
             S.smoothingSigma = get(hSmoothingWindowInput, 'String');
-            appState.uiStateCache.TIFF = S;
+            if strcmpi(target,'Session')
+                appState.uiStateCache.TIFF = S;
+            else
+                if ~isempty(appState.loaded.TIFF), appState.loaded.TIFF.ui = S; end
+            end
         else
             S.neuropilCoeff = get(hNeuropilCoeffInput, 'String');
-            appState.uiStateCache.Neural = S;
+            if strcmpi(target,'Session')
+                appState.uiStateCache.Neural = S;
+            else
+                if ~isempty(appState.loaded.Neural), appState.loaded.Neural.ui = S; end
+            end
         end
     end
 
@@ -1325,13 +1394,15 @@ updateDisplayMode();
             set(hForcePositiveCheckbox, 'Value', state.ui.forcePositive);
         end
         
-        set(hRollingAvgInput, 'String', state.ui.rollingAvg);
-        set(hTrialInput, 'String', state.ui.trials);
-        set(hDisplayMode, 'Value', state.ui.displayMode);
-        set(hInitialFramesInput, 'String', state.ui.initialFrames);
-        set(hRefTrialsInput, 'String', state.ui.refTrials);
-        set(hDivideByF0Checkbox, 'Value', state.ui.divideByF0);
-        set(hFrameByFrameCheckbox, 'Value', state.ui.frameByFrame);
+        if isfield(state,'ui')
+            set(hRollingAvgInput, 'String', state.ui.rollingAvg);
+            set(hTrialInput, 'String', state.ui.trials);
+            set(hDisplayMode, 'Value', state.ui.displayMode);
+            set(hInitialFramesInput, 'String', state.ui.initialFrames);
+            set(hRefTrialsInput, 'String', state.ui.refTrials);
+            set(hDivideByF0Checkbox, 'Value', state.ui.divideByF0);
+            set(hFrameByFrameCheckbox, 'Value', state.ui.frameByFrame);
+        end
         
         updateDisplayMode();
     end
