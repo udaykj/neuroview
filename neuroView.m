@@ -1315,10 +1315,26 @@ updateDisplayMode();
             % --- Switch TO Loaded State Context ---
             % Snapshot current session UI so we can faithfully restore later
             cacheCurrentUIState(appState.currentMode);
-            % If we have multiple loaded slots, prefer the last active slot
-            if ~isempty(appState.activeLoadedMode) && ~isempty(appState.loadedState.(appState.activeLoadedMode))
-                appState.loadedStateSnapshot = appState.loadedState.(appState.activeLoadedMode);
+
+            % Prefer the loaded slot matching the current session mode
+            desiredMode = appState.currentMode;
+            picked = false;
+            if isfield(appState.loadedState, desiredMode) && ~isempty(appState.loadedState.(desiredMode))
+                appState.loadedStateSnapshot = appState.loadedState.(desiredMode);
+                appState.activeLoadedMode = desiredMode;
+                picked = true;
             end
+            
+            % If not available for the current mode, do not auto-fallback to other mode
+            % Instead, revert to session and inform the user for clarity
+            if ~picked
+                set(hContextSession, 'Value', 1);
+                set(hContextLoaded, 'Value', 0);
+                isSwitchingContext = false;
+                appendToStatus(sprintf('No loaded state available for %s mode. Load a state in this mode or switch modes.', desiredMode));
+                return;
+            end
+
             if ~isempty(appState.loadedStateSnapshot)
                 loadedMode = getStateMode(appState.loadedStateSnapshot);
                 
