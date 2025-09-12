@@ -1,0 +1,97 @@
+NeuroView State Management Structure
+=====================================
+
+appState (Master State Container)
+├── currentMode: 'TIFF' | 'Neural'
+├── TIFF State
+│   ├── fullFilePath
+│   ├── selectedFolderPath
+│   ├── fileBaseName
+│   ├── isFolderMode
+│   ├── roiData
+│   ├── metadataString
+│   ├── dataAspectRatio
+│   ├── x_pixels_per_unit
+│   ├── y_pixels_per_unit
+│   ├── parsedNumPlanes
+│   ├── parsedNumChannels
+│   ├── nativeFrameRate
+│   ├── pixelWidth
+│   ├── pixelHeight
+│   ├── vareaData
+│   └── vareaFilePath
+├── Neural State
+│   ├── dataFilePath
+│   ├── coordsFilePath
+│   ├── tiffFolderPath
+│   ├── vareaFilePath
+│   ├── psthsData
+│   ├── psthsnpData
+│   ├── cellCoords
+│   ├── vareaData
+│   ├── numNeurons
+│   ├── numTimepoints
+│   ├── numTrials
+│   ├── metadataString
+│   ├── nativeFrameRate
+│   ├── plotXLim
+│   ├── plotYLim
+│   ├── pixelWidth
+│   ├── pixelHeight
+│   ├── x_pixels_per_um
+│   └── y_pixels_per_um
+├── uiStateCache
+│   ├── TIFF: UI settings for TIFF mode
+│   └── Neural: UI settings for Neural mode
+├── sessionCache
+│   ├── data: Processed data
+│   └── fingerprint: State fingerprint for cache validation
+├── sessionState: Snapshot before loading file state
+├── loadedStateSnapshot: Complete loaded state
+└── sessionMode: Original mode when viewing loaded state
+
+Context Switching
+=================
+Current Session Context
+├── Full editing capabilities
+├── Live data processing
+├── UI state caching enabled
+└── Mode switching enabled
+
+Loaded State Context
+├── Read-only or limited editing
+├── Pre-computed data
+├── UI state restoration
+└── Mode switching disabled
+
+State Management Functions
+=========================
+Mode Switching:
+├── modeSwitchCallback()
+├── cacheCurrentUIState()
+└── restoreUIStateForCurrentMode()
+
+Context Management:
+├── switchOperatingContextCallback()
+├── updateGUIFromState()
+└── captureFullState()
+
+Data Processing:
+├── getOrProcessData()
+├── getProcessedData()
+├── computeTrialAverageMovie_TIFF()
+└── preprocessFullSession_Neural()
+
+State Validation:
+├── getStateMode()
+├── ifisfield()
+└── ifelse()
+
+Issues Identified
+=================
+1. Complex interdependencies
+2. Multiple sources of truth
+3. State synchronization problems
+4. Memory management issues
+5. Limited error handling
+6. No rollback capabilities
