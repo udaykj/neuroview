@@ -51,6 +51,7 @@ appState.loadedState = struct('TIFF', [], 'Neural', []); % Dedicated loaded slot
 appState.activeLoadedMode = ''; % 'TIFF' or 'Neural' when Loaded context is active
 appState.loadedCache = struct('TIFF', struct('data', [], 'fingerprint', []), ...
                               'Neural', struct('data', [], 'fingerprint', []));
+appState.sessionUiCache = struct('TIFF', [], 'Neural', []); % Explicit session UI snapshots
 appState.sessionMode = 'TIFF'; % Remembers the mode of the current session when viewing a loaded state
 
 % --- GUI Setup ---
@@ -161,6 +162,7 @@ updateDisplayMode();
         % 1. Cache the UI state of the outgoing mode, ONLY if not in a context switch
         if ~isSwitchingContext
             cacheCurrentUIState(appState.currentMode);
+            appState.sessionUiCache.(appState.currentMode) = harvestUIStateForMode(appState.currentMode);
         end
         
         % 2. Determine the new mode
@@ -214,6 +216,8 @@ updateDisplayMode();
             % --- Take snapshot of current session BEFORE overwriting ---
             appState.sessionMode = appState.currentMode; % Remember the session's mode
             cacheCurrentUIState(appState.currentMode); % Save UI settings for current session
+            % Also store an explicit session UI snapshot for robust restoration
+            appState.sessionUiCache.(appState.currentMode) = harvestUIStateForMode(appState.currentMode);
             
             state = loadedData.state;
             
@@ -653,6 +657,7 @@ updateDisplayMode();
         set(hText, 'String', sprintf('Analyzing file:\n%s...', fileName)); drawnow;
         try
             processMetadata_TIFF(T.fullFilePath, fileName);
+            appendToStatus(sprintf('TIFF file loaded: %s', T.fullFilePath));
         catch ME
             set(hText, 'String', sprintf('Error reading file:\n%s\n\nDetails:\n%s', T.fullFilePath, ME.message));
         end
@@ -680,6 +685,7 @@ updateDisplayMode();
             appState.TIFF = T;
             
             processMetadata_TIFF(firstFilePath, folderName);
+            appendToStatus(sprintf('TIFF folder loaded: %s', folderName));
         catch ME
             set(hText, 'String', sprintf('Error reading folder:\n%s\n\nDetails:\n%s', T.selectedFolderPath, ME.message));
         end
@@ -707,6 +713,7 @@ updateDisplayMode();
             appState.sessionCache = struct('data', [], 'fingerprint', []); % Invalidate cache
             set(hText, 'String', sprintf('Data loaded successfully from:\n%s', fileName)); drawnow;
             updateDisplayInfo();
+            appendToStatus(sprintf('Neural data loaded: %s', N.dataFilePath));
         catch ME
             set(hText, 'String', sprintf('Error loading data file:\n%s', ME.message));
             N.dataFilePath = ''; N.psthsData = []; N.psthsnpData = []; appState.Neural = N;
@@ -731,6 +738,7 @@ updateDisplayMode();
             appState.sessionCache = struct('data', [], 'fingerprint', []); % Invalidate cache
             set(hText, 'String', sprintf('Coordinates loaded successfully from:\n%s', fileName)); drawnow;
             updateDisplayInfo();
+            appendToStatus(sprintf('Neural coords loaded: %s', N.coordsFilePath));
         catch ME
             set(hText, 'String', sprintf('Error loading coordinates file:\n%s', ME.message));
             N.coordsFilePath = ''; N.cellCoords = []; appState.Neural = N;
@@ -753,6 +761,7 @@ updateDisplayMode();
             appState.sessionCache = struct('data', [], 'fingerprint', []); % Invalidate cache
             set(hText, 'String', sprintf('TIFF folder loaded successfully:\n%s', folderName)); drawnow;
             updateDisplayInfo();
+            appendToStatus(sprintf('Neural TIFF folder loaded: %s', folderName));
         catch ME
             set(hText, 'String', sprintf('Error reading TIFF folder:\n%s', ME.message));
             appState.Neural.tiffFolderPath = '';
@@ -781,6 +790,7 @@ updateDisplayMode();
             appState.sessionCache = struct('data', [], 'fingerprint', []); % Invalidate cache
             set(hText, 'String', sprintf('Visual areas loaded from:\n%s', fileName)); drawnow;
             updateDisplayInfo();
+            appendToStatus(sprintf('Visual areas loaded: %s', filePath));
         catch ME
             set(hText, 'String', sprintf('Error loading visual area file:\n%s', ME.message));
             appState.TIFF.vareaFilePath = ''; appState.TIFF.vareaData = [];
@@ -1354,6 +1364,13 @@ updateDisplayMode();
                     setProcessingPanelEnabled(true);
                     appendToStatus('Switched to Loaded State (raw data available).');
                 end
+
+                % Disable load buttons while in Loaded State context
+                if strcmp(loadedMode,'TIFF')
+                    set(findobj(hTiffLoadPanel,'Type','uicontrol'),'Enable','off');
+                else
+                    set(findobj(hNeuralLoadPanel,'Type','uicontrol'),'Enable','off');
+                end
             end
         else
             % --- Switch BACK TO Session Context ---
@@ -1373,8 +1390,36 @@ updateDisplayMode();
             modeSwitchCallback(hModeSelector); % This will call restoreUIStateForCurrentMode
             
             % Finalize UI state
+            % Force-restore the explicit session UI snapshot if present to avoid sticky loaded UI
+            if isfield(appState.sessionUiCache, appState.currentMode) && ~isempty(appState.sessionUiCache.(appState.currentMode))
+                Ssnap = appState.sessionUiCache.(appState.currentMode);
+                if strcmp(appState.currentMode,'TIFF')
+                    set(hPlaneDropdown,'Value',Ssnap.plane); set(hChannelDropdown,'Value',Ssnap.channel); set(hSmoothingWindowInput,'String',Ssnap.smoothingSigma);
+                else
+                    set(hNeuropilCoeffInput,'String',Ssnap.neuropilCoeff);
+                end
+                set(hRollingAvgInput,'String',Ssnap.rollingAvg);
+                set(hTrialInput,'String',Ssnap.trials);
+                set(hDisplayMode,'Value',Ssnap.displayMode);
+                set(hInitialFramesInput,'String',Ssnap.initialFrames);
+                set(hRefTrialsInput,'String',Ssnap.refTrials);
+                set(hDivideByF0Checkbox,'Value',Ssnap.divideByF0);
+                set(hFrameByFrameCheckbox,'Value',Ssnap.frameByFrame);
+                set(hDetrendCheckbox,'Value',Ssnap.detrend);
+                set(hDetrendWindowInput,'String',Ssnap.detrendWindow);
+                set(hForcePositiveCheckbox,'Value',Ssnap.forcePositive);
+                updateDisplayMode();
+                % Invalidate sessionCache so session recomputation uses restored UI
+                appState.sessionCache = struct('data', [], 'fingerprint', []);
+            end
             showInfoCallback();
             set(hModeSelector, 'Enable', 'on');
+            % Re-enable load buttons for the active session mode
+            if strcmp(appState.currentMode,'TIFF')
+                set(findobj(hTiffLoadPanel,'Type','uicontrol'),'Enable','on');
+            else
+                set(findobj(hNeuralLoadPanel,'Type','uicontrol'),'Enable','on');
+            end
             setProcessingPanelEnabled(true);
             appendToStatus('Switched back to Current Session.');
         end
