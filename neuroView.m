@@ -1313,6 +1313,8 @@ updateDisplayMode();
 
         if isLoadedContext
             % --- Switch TO Loaded State Context ---
+            % Snapshot current session UI so we can faithfully restore later
+            cacheCurrentUIState(appState.currentMode);
             % If we have multiple loaded slots, prefer the last active slot
             if ~isempty(appState.activeLoadedMode) && ~isempty(appState.loadedState.(appState.activeLoadedMode))
                 appState.loadedStateSnapshot = appState.loadedState.(appState.activeLoadedMode);
