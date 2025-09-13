@@ -1336,6 +1336,43 @@ updateDisplayMode();
                     % Plotted object handles
                     offPlot = [];
                     hTextTime = []; hTextSpeed = [];
+                    
+                    function drawVareaOverlaysOffscreen()
+                        if isempty(generationState.Neural) || isempty(generationState.Neural.vareaData), return; end
+                        if exist('vareaHandles','var') && ~isempty(vareaHandles)
+                            if get(vareaHandles.toggleAllCheckbox,'Value') ~= 1, return; end
+                        else
+                            return;
+                        end
+                        areaNames = fields(generationState.Neural.vareaData);
+                        numAreas = numel(areaNames);
+                        colorsLocal = lines(numAreas);
+                        if strcmp(generationState.mode,'TIFF')
+                            Tloc = generationState.TIFF;
+                            xLimLoc = [0, Tloc.pixelWidth / Tloc.x_pixels_per_unit];
+                            yLimLoc = [0, Tloc.pixelHeight / Tloc.y_pixels_per_unit];
+                        else
+                            Nloc = generationState.Neural;
+                            xLimLoc = Nloc.plotXLim; yLimLoc = Nloc.plotYLim;
+                        end
+                        doFlipY = 0;
+                        if exist('vareaHandles','var') && ~isempty(vareaHandles)
+                            doFlipY = get(vareaHandles.flipYCheckbox,'Value');
+                        end
+                        hold(hOffAx,'on');
+                        for ai = 1:numAreas
+                            mask = generationState.Neural.vareaData.(areaNames{ai});
+                            boundaries = bwboundaries(mask);
+                            for kk = 1:length(boundaries)
+                                boundary = boundaries{kk};
+                                scaled_y = (boundary(:,1) ./ size(mask,1)) .* yLimLoc(2);
+                                if doFlipY == 1, scaled_y = yLimLoc(2) - scaled_y; end
+                                scaled_x = (boundary(:,2) ./ size(mask,2)) .* xLimLoc(2);
+                                plot(hOffAx, scaled_x, scaled_y, 'Color', colorsLocal(ai,:), 'LineWidth', 2);
+                            end
+                        end
+                        hold(hOffAx,'off');
+                    end
 
                     % Helpers to initialize/update frame
                     function initOffscreen(k)
@@ -1377,6 +1414,7 @@ updateDisplayMode();
                     hWait = waitbar(0, sprintf('Saving video... 0/%d', numMovieFrames));
                     originalSliderValue = get(hSeekSlider, 'Value');
                     initOffscreen(1);
+                    drawVareaOverlaysOffscreen();
                     for k = 1:numMovieFrames
                         updateOffscreen(k); drawnow;
                         fr = getframe(hOffFig);
