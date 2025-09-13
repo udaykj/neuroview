@@ -1298,32 +1298,27 @@ updateDisplayMode();
                     xspan = max(1, diff(xl)); yspan = max(1, diff(yl));
                     aspect = xspan / yspan; % width/height
 
-                    % Compute target size
-                    function [tw,th] = computeTarget(aspect, nativeW, nativeH, resChoice)
-                        switch resChoice
-                            case 'Native'
-                                if ~isempty(nativeW) && ~isempty(nativeH)
-                                    tw = nativeW; th = nativeH; return;
-                                else
-                                    % Default to 1080p equivalent if native unknown
-                                    th = 1080; tw = round(th * aspect);
-                                end
-                            case '1080p'
-                                th = 1080; tw = round(th * aspect);
-                            case '1440p'
-                                th = 1440; tw = round(th * aspect);
-                            case '2160p'
-                                th = 2160; tw = round(th * aspect);
-                            otherwise
-                                th = 1080; tw = round(th * aspect);
-                        end
-                        if tw < 1, tw = 1; end
-                        if th < 1, th = 1; end
-                        % Make even for codecs
-                        if mod(tw,2)~=0, tw = tw+1; end
-                        if mod(th,2)~=0, th = th+1; end
+                    % Compute target size inline (avoid nested function nesting rules)
+                    switch resChoice
+                        case 'Native'
+                            if ~isempty(nativeW) && ~isempty(nativeH)
+                                targetW = nativeW; targetH = nativeH;
+                            else
+                                targetH = 1080; targetW = round(targetH * aspect);
+                            end
+                        case '1080p'
+                            targetH = 1080; targetW = round(targetH * aspect);
+                        case '1440p'
+                            targetH = 1440; targetW = round(targetH * aspect);
+                        case '2160p'
+                            targetH = 2160; targetW = round(targetH * aspect);
+                        otherwise
+                            targetH = 1080; targetW = round(targetH * aspect);
                     end
-                    [targetW, targetH] = computeTarget(aspect, nativeW, nativeH, resChoice);
+                    if targetW < 1, targetW = 1; end
+                    if targetH < 1, targetH = 1; end
+                    if mod(targetW,2)~=0, targetW = targetW+1; end
+                    if mod(targetH,2)~=0, targetH = targetH+1; end
 
                     % Setup offscreen figure/axes
                     hOffFig = figure('Visible','off','Units','pixels','Position',[100 100 targetW targetH], 'Color','k');
@@ -1336,87 +1331,73 @@ updateDisplayMode();
                     % Plotted object handles
                     offPlot = [];
                     hTextTime = []; hTextSpeed = [];
-                    
-                    function drawVareaOverlaysOffscreen()
-                        if isempty(generationState.Neural) || isempty(generationState.Neural.vareaData), return; end
-                        if exist('vareaHandles','var') && ~isempty(vareaHandles)
-                            if get(vareaHandles.toggleAllCheckbox,'Value') ~= 1, return; end
-                        else
-                            return;
-                        end
-                        areaNames = fields(generationState.Neural.vareaData);
-                        numAreas = numel(areaNames);
-                        colorsLocal = lines(numAreas);
-                        if strcmp(generationState.mode,'TIFF')
-                            Tloc = generationState.TIFF;
-                            xLimLoc = [0, Tloc.pixelWidth / Tloc.x_pixels_per_unit];
-                            yLimLoc = [0, Tloc.pixelHeight / Tloc.y_pixels_per_unit];
-                        else
-                            Nloc = generationState.Neural;
-                            xLimLoc = Nloc.plotXLim; yLimLoc = Nloc.plotYLim;
-                        end
-                        doFlipY = 0;
-                        if exist('vareaHandles','var') && ~isempty(vareaHandles)
-                            doFlipY = get(vareaHandles.flipYCheckbox,'Value');
-                        end
-                        hold(hOffAx,'on');
-                        for ai = 1:numAreas
-                            mask = generationState.Neural.vareaData.(areaNames{ai});
-                            boundaries = bwboundaries(mask);
-                            for kk = 1:length(boundaries)
-                                boundary = boundaries{kk};
-                                scaled_y = (boundary(:,1) ./ size(mask,1)) .* yLimLoc(2);
-                                if doFlipY == 1, scaled_y = yLimLoc(2) - scaled_y; end
-                                scaled_x = (boundary(:,2) ./ size(mask,2)) .* xLimLoc(2);
-                                plot(hOffAx, scaled_x, scaled_y, 'Color', colorsLocal(ai,:), 'LineWidth', 2);
-                            end
-                        end
-                        hold(hOffAx,'off');
-                    end
 
-                    % Helpers to initialize/update frame
-                    function initOffscreen(k)
-                        data = getModeDataForFrame(k);
-                        if strcmp(selectedMode,'Cells')
-                            offPlot = scatter(hOffAx, generationState.physicalCoords(:,1), generationState.physicalCoords(:,2), ...
-                                get(markerHandles.sizeSlider,'Value'), data, 'filled', 'Marker', markerHandles.shapeValues{get(markerHandles.shapeDropdown,'Value')});
+                    % Initialize offscreen plot and overlays
+                    firstData = getModeDataForFrame(1);
+                    if strcmp(selectedMode,'Cells')
+                        offPlot = scatter(hOffAx, generationState.physicalCoords(:,1), generationState.physicalCoords(:,2), ...
+                            get(markerHandles.sizeSlider,'Value'), firstData, 'filled', 'Marker', markerHandles.shapeValues{get(markerHandles.shapeDropdown,'Value')});
+                    else
+                        offPlot = imagesc(hOffAx, 'CData', firstData);
+                        % Match spatial scaling
+                        if isTiffMode
+                            T = generationState.TIFF;
+                            physW = T.pixelWidth / T.x_pixels_per_unit; physH = T.pixelHeight / T.y_pixels_per_unit;
+                            set(offPlot,'XData',[0 physW],'YData',[0 physH]);
                         else
-                            offPlot = imagesc(hOffAx, 'CData', data);
-                            % Match spatial scaling
-                            if isTiffMode
-                                T = generationState.TIFF;
-                                physW = T.pixelWidth / T.x_pixels_per_unit; physH = T.pixelHeight / T.y_pixels_per_unit;
-                                set(offPlot,'XData',[0 physW],'YData',[0 physH]);
-                            else
-                                N = generationState.Neural; set(offPlot,'XData',N.plotXLim,'YData',N.plotYLim);
-                            end
+                            N = generationState.Neural; set(offPlot,'XData',N.plotXLim,'YData',N.plotYLim);
                         end
-                        setupPlotAxes(hOffAx, generationState.mode, generationState.TIFF, generationState.Neural);
-                        axis(hOffAx,'off');
-                        % Overlays
-                        hTextTime = text(hOffAx, 0.99, 0.97, '', 'Units','normalized','Color','w','FontWeight','bold','BackgroundColor','k','HorizontalAlignment','right','VerticalAlignment','top');
-                        hTextSpeed = text(hOffAx, 0.99, 0.03, '', 'Units','normalized','Color','w','FontWeight','bold','BackgroundColor','k','HorizontalAlignment','right');
                     end
-                    function updateOffscreen(k)
-                        data = getModeDataForFrame(k);
+                    setupPlotAxes(hOffAx, generationState.mode, generationState.TIFF, generationState.Neural);
+                    axis(hOffAx,'off');
+                    % Draw varea overlays once if enabled
+                    if ~isempty(generationState.Neural) && ~isempty(generationState.Neural.vareaData)
+                        if exist('vareaHandles','var') && ~isempty(vareaHandles) && get(vareaHandles.toggleAllCheckbox,'Value') == 1
+                            areaNames = fields(generationState.Neural.vareaData);
+                            colorsLocal = lines(numel(areaNames));
+                            if isTiffMode
+                                Tloc = generationState.TIFF;
+                                xLimLoc = [0, Tloc.pixelWidth / Tloc.x_pixels_per_unit];
+                                yLimLoc = [0, Tloc.pixelHeight / Tloc.y_pixels_per_unit];
+                            else
+                                Nloc = generationState.Neural; xLimLoc = Nloc.plotXLim; yLimLoc = Nloc.plotYLim;
+                            end
+                            doFlipY = get(vareaHandles.flipYCheckbox,'Value');
+                            hold(hOffAx,'on');
+                            for ai = 1:numel(areaNames)
+                                mask = generationState.Neural.vareaData.(areaNames{ai});
+                                boundaries = bwboundaries(mask);
+                                for kk = 1:length(boundaries)
+                                    boundary = boundaries{kk};
+                                    scaled_y = (boundary(:,1) ./ size(mask,1)) .* yLimLoc(2);
+                                    if doFlipY == 1, scaled_y = yLimLoc(2) - scaled_y; end
+                                    scaled_x = (boundary(:,2) ./ size(mask,2)) .* xLimLoc(2);
+                                    plot(hOffAx, scaled_x, scaled_y, 'Color', colorsLocal(ai,:), 'LineWidth', 2);
+                                end
+                            end
+                            hold(hOffAx,'off');
+                        end
+                    end
+                    % Overlays
+                    hTextTime = text(hOffAx, 0.99, 0.97, '', 'Units','normalized','Color','w','FontWeight','bold','BackgroundColor','k','HorizontalAlignment','right','VerticalAlignment','top');
+                    hTextSpeed = text(hOffAx, 0.99, 0.03, '', 'Units','normalized','Color','w','FontWeight','bold','BackgroundColor','k','HorizontalAlignment','right');
+
+                    % Render loop
+                    hWait = waitbar(0, sprintf('Saving video... 0/%d', numMovieFrames));
+                    originalSliderValue = get(hSeekSlider, 'Value');
+                    for k = 1:numMovieFrames
+                        % Update plot
+                        frameData = getModeDataForFrame(k);
                         if strcmp(selectedMode,'Cells')
-                            set(offPlot,'CData', data);
+                            set(offPlot,'CData', frameData);
                         else
-                            set(offPlot,'CData', data);
+                            set(offPlot,'CData', frameData);
                         end
                         % Update overlays
                         tSec = (k-1) / frameRate; tStr = sprintf('t = %.1fs', round(tSec*10)/10);
                         spStr = sprintf('%gx', speedVal);
                         set(hTextTime,'String', tStr); set(hTextSpeed,'String', spStr);
-                    end
-
-                    % Render loop
-                    hWait = waitbar(0, sprintf('Saving video... 0/%d', numMovieFrames));
-                    originalSliderValue = get(hSeekSlider, 'Value');
-                    initOffscreen(1);
-                    drawVareaOverlaysOffscreen();
-                    for k = 1:numMovieFrames
-                        updateOffscreen(k); drawnow;
+                        drawnow;
                         fr = getframe(hOffFig);
                         writeVideo(v, fr.cdata);
                         if ishandle(hWait), waitbar(k/numMovieFrames, hWait, sprintf('Saving video... %d/%d', k, numMovieFrames)); end
