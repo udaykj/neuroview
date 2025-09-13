@@ -1394,7 +1394,7 @@ updateDisplayMode();
                         setupPlotAxes(hOffAx, generationState.mode, generationState.TIFF, generationState.Neural);
                         axis(hOffAx,'off');
                         % Overlays
-                        hTextTime = text(hOffAx, 0.01, 0.03, '', 'Units','normalized','Color','w','FontWeight','bold','BackgroundColor','k');
+                        hTextTime = text(hOffAx, 0.99, 0.97, '', 'Units','normalized','Color','w','FontWeight','bold','BackgroundColor','k','HorizontalAlignment','right','VerticalAlignment','top');
                         hTextSpeed = text(hOffAx, 0.99, 0.03, '', 'Units','normalized','Color','w','FontWeight','bold','BackgroundColor','k','HorizontalAlignment','right');
                     end
                     function updateOffscreen(k)
