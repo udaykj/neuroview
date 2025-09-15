@@ -2461,10 +2461,23 @@ updateDisplayMode();
             if isempty(str) || strcmp(str, ':') || strcmpi(str, 'all')
                 selectedTrials = 1:nTrials;
             else
+                % Try base workspace first (back-compat for users who define variables there)
                 try
                     selectedTrials = evalin('base', str);
                 catch
-                    % Fallback: attempt numeric parsing
+                    selectedTrials = [];
+                end
+                % If that failed, try evaluating locally after substituting 'end'
+                if isempty(selectedTrials)
+                    try
+                        str_local = regexprep(str, '(?i)\bend\b', num2str(nTrials));
+                        selectedTrials = eval(str_local); %#ok<EVLDIR>
+                    catch
+                        selectedTrials = [];
+                    end
+                end
+                % As a last resort, numeric parse
+                if isempty(selectedTrials)
                     try
                         selectedTrials = str2num(str); %#ok<ST2NM>
                     catch
@@ -2485,12 +2498,14 @@ updateDisplayMode();
                 selectedTrials = find(selectedTrials);
             end
             if ~isnumeric(selectedTrials)
-                error('Invalid trial selection.');
+                appendToStatus('Invalid trial selection string; defaulting to all trials.');
+                selectedTrials = 1:nTrials;
             end
             selectedTrials = unique(round(selectedTrials(:)'));
             selectedTrials = selectedTrials(selectedTrials >= 1 & selectedTrials <= nTrials);
             if isempty(selectedTrials)
-                error('Invalid trial selection.');
+                appendToStatus('Empty/invalid trial selection; defaulting to all trials.');
+                selectedTrials = 1:nTrials;
             end
             appendToStatus(sprintf('Averaging %d trials...', numel(selectedTrials)));
             avgData = mean(F_session_processed(:, :, selectedTrials), 3);
