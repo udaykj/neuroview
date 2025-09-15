@@ -1561,10 +1561,8 @@ updateDisplayMode();
         end
 
         function renderTraces()
-            if ~isgraphics(hTracesFig) || ~ishold(traceAxes)
-                % Ensure axes exists
-            end
-            if ~isgraphics(hTracesFig) || ~isgraphics(traceAxes)
+            % Ensure traces UI exists before attempting to render
+            if isempty(hTracesFig) || ~isgraphics(hTracesFig) || isempty(traceAxes) || ~isgraphics(traceAxes)
                 return;
             end
             % Determine active indices
@@ -1601,7 +1599,7 @@ updateDisplayMode();
         end
 
         function updateTraceCursor(frameIdx)
-            if ~isgraphics(hTracesFig) || ~isgraphics(traceAxes), return; end
+            if isempty(hTracesFig) || ~isgraphics(hTracesFig) || isempty(traceAxes) || ~isgraphics(traceAxes), return; end
             t = (frameIdx-1) / frameRate;
             if isgraphics(traceCursorLine)
                 set(traceCursorLine, 'Value', t);
