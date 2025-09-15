@@ -1487,7 +1487,7 @@ updateDisplayMode();
                     uicontrol('Parent', hTracesFig, 'Style','text','String','Filter expr:','Units','normalized','Position',[0.10 0.12 0.15 0.06],'HorizontalAlignment','left');
                     hFilterEdit = uicontrol('Parent', hTracesFig, 'Style','edit','String',cellFilterExpr,'Units','normalized','Position',[0.25 0.12 0.37 0.07]);
                     uicontrol('Parent', hTracesFig, 'Style','pushbutton','String','Apply','Units','normalized','Position',[0.64 0.12 0.10 0.07],'Callback', @(s,e) applyFilterExpr(get(hFilterEdit,'String')));
-                    hAvgOnly = uicontrol('Parent', hTracesFig, 'Style','checkbox','String','Average only','Value',traceShowAverageOnly,'Units','normalized','Position',[0.76 0.12 0.18 0.07],'Callback', @(s,e) setAvgOnly(get(hAvgOnly,'Value')));
+                    hAvgOnly = uicontrol('Parent', hTracesFig, 'Style','checkbox','String','Average only','Value',traceShowAverageOnly,'Units','normalized','Position',[0.76 0.12 0.18 0.07],'Callback', @(src,evt) setAvgOnly(get(src,'Value')));
                     
                     % Y-Limits controls
                     uicontrol('Parent', hTracesFig, 'Style','text','String','Y-limits:','Units','normalized','Position',[0.10 0.03 0.15 0.06],'HorizontalAlignment','left');
