@@ -1013,11 +1013,13 @@ updateDisplayMode();
                          set(vareaHandles.flipYCheckbox, 'Value', playerStateToApply.vareaFlipYState);
                    end
                 end
-                % Restore trace settings if present
+                % Restore traces config if present
                 if isfield(playerStateToApply, 'traceSelectionMode'), traceSelectionMode = playerStateToApply.traceSelectionMode; end
                 if isfield(playerStateToApply, 'traceSelectionIndices'), selectedCellIndices = playerStateToApply.traceSelectionIndices; end
                 if isfield(playerStateToApply, 'traceFilterExpr'), cellFilterExpr = playerStateToApply.traceFilterExpr; end
                 if isfield(playerStateToApply, 'traceAverageOnly'), traceShowAverageOnly = playerStateToApply.traceAverageOnly; end
+                if isfield(playerStateToApply, 'traceYLimAuto'), traceYLimAuto = playerStateToApply.traceYLimAuto; end
+                if isfield(playerStateToApply, 'traceYLim'), traceYLim = playerStateToApply.traceYLim; end
                 contrastHandles.setPlayerState(playerStateToApply); % Set contrast state BEFORE display change
             end
             
@@ -1277,6 +1279,8 @@ updateDisplayMode();
                 pState.traceSelectionIndices = selectedCellIndices;
                 pState.traceFilterExpr = cellFilterExpr;
                 pState.traceAverageOnly = traceShowAverageOnly;
+                pState.traceYLimAuto = traceYLimAuto;
+                pState.traceYLim = traceYLim;
                 stateToSave.playerState = pState;
 
                 try
