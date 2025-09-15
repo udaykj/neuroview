@@ -903,6 +903,8 @@ updateDisplayMode();
         cellFilterExpr = '';
         traceShowAverageOnly = 1; % Default to average-only for performance
         traceSelectionMode = 'All'; % {'All','Lasso','Filter'}
+        traceYLimAuto = 1; % 1=auto scale; 0=fixed (persisted in playerState)
+        traceYLim = [];    % [ymin ymax] when fixed
         
         isImageData = (ndims(precomputedMovie) == 3);
         frameRate = generationState.frameRate;
