@@ -2453,12 +2453,43 @@ updateDisplayMode();
     
     function [avgData, success, errMsg] = computeTrialAverageData_Neural(trialSelectionStr, F_session_processed)
         avgData = []; success = false; errMsg = '';
-        N = appState.Neural;
         try
-            selectedTrials = evalin('base', trialSelectionStr);
-            if islogical(selectedTrials), selectedTrials = find(selectedTrials); end
-            
-            if isempty(selectedTrials) || any(selectedTrials > N.numTrials) || any(selectedTrials < 1)
+            nTrials = size(F_session_processed, 3);
+            % Parse selection string with robust fallbacks
+            selectedTrials = [];
+            str = strtrim(trialSelectionStr);
+            if isempty(str) || strcmp(str, ':') || strcmpi(str, 'all')
+                selectedTrials = 1:nTrials;
+            else
+                try
+                    selectedTrials = evalin('base', str);
+                catch
+                    % Fallback: attempt numeric parsing
+                    try
+                        selectedTrials = str2num(str); %#ok<ST2NM>
+                    catch
+                        selectedTrials = [];
+                    end
+                end
+            end
+            if islogical(selectedTrials)
+                % Logical mask -> indices
+                if numel(selectedTrials) ~= nTrials
+                    % Pad/trim to nTrials if shape mismatch
+                    selectedTrials = selectedTrials(:)';
+                    selectedTrials = selectedTrials(1:min(end,nTrials));
+                    if numel(selectedTrials) < nTrials
+                        selectedTrials(end+1:nTrials) = false;
+                    end
+                end
+                selectedTrials = find(selectedTrials);
+            end
+            if ~isnumeric(selectedTrials)
+                error('Invalid trial selection.');
+            end
+            selectedTrials = unique(round(selectedTrials(:)'));
+            selectedTrials = selectedTrials(selectedTrials >= 1 & selectedTrials <= nTrials);
+            if isempty(selectedTrials)
                 error('Invalid trial selection.');
             end
             appendToStatus(sprintf('Averaging %d trials...', numel(selectedTrials)));
