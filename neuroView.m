@@ -893,6 +893,17 @@ updateDisplayMode();
         hNotesFig = []; % Handle for the notes window
         annotationText = ''; % Variable to hold the notes text
         
+        % --- Traces UI/State ---
+        hTracesFig = [];
+        traceAxes = [];
+        traceCursorLine = [];
+        tracePerCellLines = [];
+        traceAvgLine = [];
+        selectedCellIndices = [];
+        cellFilterExpr = '';
+        traceShowAverageOnly = 1; % Default to average-only for performance
+        traceSelectionMode = 'All'; % {'All','Lasso','Filter'}
+        
         isImageData = (ndims(precomputedMovie) == 3);
         frameRate = generationState.frameRate;
         
@@ -934,8 +945,9 @@ updateDisplayMode();
             hFrameCounter = uicontrol(hPlaybackPanel, 'Style', 'text', 'String', 'Frame 1/X', 'Units', 'normalized', 'Position', [0.28 0.05 0.15 0.4], 'FontSize', 9);
             uicontrol(hPlaybackPanel, 'Style', 'text', 'String', 'Speed:', 'Units', 'normalized', 'Position', [0.44 0.05 0.1 0.4], 'HorizontalAlignment', 'right', 'FontSize', 9);
             hMovieSpeedDropdown = uicontrol('Parent', hPlaybackPanel, 'Style', 'popupmenu', 'String', {'0.5x', '1x', '2x', '4x', '8x', '16x'}, 'Value', 2, 'Units', 'normalized', 'Position', [0.55 0.05 0.15 0.4], 'Callback', @updateSpeed, 'FontSize', 9);
-            uicontrol(hPlaybackPanel, 'Style', 'pushbutton', 'String', 'Notes', 'Units', 'normalized', 'Position', [0.72 0.05 0.12 0.4], 'Callback', @openNotesWindow, 'FontSize', 9);
-            uicontrol(hPlaybackPanel, 'Style', 'pushbutton', 'String', 'Save...', 'Units', 'normalized', 'Position', [0.85 0.05 0.14 0.4], 'Callback', @saveMovie, 'FontSize', 9);
+            uicontrol(hPlaybackPanel, 'Style', 'pushbutton', 'String', 'Notes', 'Units', 'normalized', 'Position', [0.68 0.05 0.10 0.4], 'Callback', @openNotesWindow, 'FontSize', 9);
+            uicontrol(hPlaybackPanel, 'Style', 'pushbutton', 'String', 'Save...', 'Units', 'normalized', 'Position', [0.80 0.05 0.10 0.4], 'Callback', @saveMovie, 'FontSize', 9);
+            uicontrol(hPlaybackPanel, 'Style', 'pushbutton', 'String', 'Traces', 'Units', 'normalized', 'Position', [0.92 0.05 0.06 0.4], 'Callback', @openTracesWindow, 'FontSize', 9);
 
             % Setup display mode options based on available data
             tiffModes = {'Image', 'Grid'};
@@ -1001,6 +1013,11 @@ updateDisplayMode();
                          set(vareaHandles.flipYCheckbox, 'Value', playerStateToApply.vareaFlipYState);
                    end
                 end
+                % Restore trace settings if present
+                if isfield(playerStateToApply, 'traceSelectionMode'), traceSelectionMode = playerStateToApply.traceSelectionMode; end
+                if isfield(playerStateToApply, 'traceSelectionIndices'), selectedCellIndices = playerStateToApply.traceSelectionIndices; end
+                if isfield(playerStateToApply, 'traceFilterExpr'), cellFilterExpr = playerStateToApply.traceFilterExpr; end
+                if isfield(playerStateToApply, 'traceAverageOnly'), traceShowAverageOnly = playerStateToApply.traceAverageOnly; end
                 contrastHandles.setPlayerState(playerStateToApply); % Set contrast state BEFORE display change
             end
             
@@ -1080,6 +1097,7 @@ updateDisplayMode();
                 end
             end
             set(hFrameCounter, 'String', sprintf('Frame %d/%d', idx, numMovieFrames));
+            updateTraceCursor(idx);
         end
 
         function displayModeChanged()
@@ -1179,6 +1197,7 @@ updateDisplayMode();
                 delete(movieTimer);
             end
             if isgraphics(hNotesFig), delete(hNotesFig); end
+            if isgraphics(hTracesFig), delete(hTracesFig); end
             if isgraphics(hMovieFig), delete(hMovieFig); end
         end
 
@@ -1253,6 +1272,11 @@ updateDisplayMode();
                     pState.vareaToggleAllState = get(vareaHandles.toggleAllCheckbox, 'Value');
                     pState.vareaFlipYState = get(vareaHandles.flipYCheckbox, 'Value');
                 end
+                % Persist trace configuration
+                pState.traceSelectionMode = traceSelectionMode;
+                pState.traceSelectionIndices = selectedCellIndices;
+                pState.traceFilterExpr = cellFilterExpr;
+                pState.traceAverageOnly = traceShowAverageOnly;
                 stateToSave.playerState = pState;
 
                 try
@@ -1432,6 +1456,157 @@ updateDisplayMode();
             else
                 % If window exists, just bring it to the front
                 figure(hNotesFig);
+            end
+        end
+
+        % --- Traces UI & Logic ---
+        function openTracesWindow(~,~)
+            if ndims(precomputedMovie) == 3
+                warndlg('Traces are available only for Neural movies (cell data).', 'Traces');
+                return;
+            end
+            try
+                if ~isgraphics(hTracesFig)
+                    hTracesFig = figure('Name','Cell Time Traces','NumberTitle','off','Position',[1220 100 600 450], 'CloseRequestFcn', @closeTracesWindow);
+                    traceAxes = axes('Parent', hTracesFig, 'Units','normalized','Position',[0.10 0.30 0.85 0.65]);
+                    xlabel(traceAxes,'Time (s)'); ylabel(traceAxes,'Activity');
+                    
+                    % Controls
+                    uicontrol('Parent', hTracesFig, 'Style','text','String','Selection:','Units','normalized','Position',[0.10 0.21 0.15 0.06],'HorizontalAlignment','left');
+                    hSelPopup = uicontrol('Parent', hTracesFig, 'Style','popupmenu','String',{'All','Lasso','Filter'},'Units','normalized','Position',[0.25 0.21 0.20 0.07], 'Callback', @selectionModeChanged);
+                    uicontrol('Parent', hTracesFig, 'Style','pushbutton','String','Lasso...','Units','normalized','Position',[0.47 0.21 0.15 0.07],'Callback', @startLassoSelection);
+                    uicontrol('Parent', hTracesFig, 'Style','text','String','Filter expr:','Units','normalized','Position',[0.10 0.12 0.15 0.06],'HorizontalAlignment','left');
+                    hFilterEdit = uicontrol('Parent', hTracesFig, 'Style','edit','String',cellFilterExpr,'Units','normalized','Position',[0.25 0.12 0.37 0.07]);
+                    uicontrol('Parent', hTracesFig, 'Style','pushbutton','String','Apply','Units','normalized','Position',[0.64 0.12 0.10 0.07],'Callback', @(s,e) applyFilterExpr(get(hFilterEdit,'String')));
+                    hAvgOnly = uicontrol('Parent', hTracesFig, 'Style','checkbox','String','Average only','Value',traceShowAverageOnly,'Units','normalized','Position',[0.76 0.12 0.18 0.07],'Callback', @(s,e) setAvgOnly(get(hAvgOnly,'Value')));
+                    
+                    % Initialize selection UI state
+                    switch traceSelectionMode
+                        case 'All', set(hSelPopup,'Value',1);
+                        case 'Lasso', set(hSelPopup,'Value',2);
+                        case 'Filter', set(hSelPopup,'Value',3);
+                    end
+                else
+                    figure(hTracesFig);
+                end
+                renderTraces();
+            catch ME
+                warndlg(sprintf('Error opening traces window:\n%s', ME.message), 'Traces');
+            end
+            
+            function selectionModeChanged(src, ~)
+                modes = get(src,'String');
+                traceSelectionMode = modes{get(src,'Value')};
+                if strcmp(traceSelectionMode,'Lasso')
+                    startLassoSelection();
+                elseif strcmp(traceSelectionMode,'Filter')
+                    % Wait for Apply
+                else
+                    % All
+                    selectedCellIndices = [];
+                    renderTraces();
+                end
+            end
+            function setAvgOnly(val)
+                traceShowAverageOnly = val;
+                renderTraces();
+            end
+        end
+
+        function closeTracesWindow(src, ~)
+            if isgraphics(src), delete(src); end
+            hTracesFig = [];
+            traceAxes = [];
+            traceCursorLine = [];
+            tracePerCellLines = [];
+            traceAvgLine = [];
+        end
+
+        function applyFilterExpr(expr)
+            if nargin<1, expr = cellFilterExpr; end
+            try
+                idx = evalin('base', expr);
+                Ncells = size(precomputedMovie,1);
+                if islogical(idx), idx = find(idx);
+                elseif ~isnumeric(idx), error('Filter must return numeric or logical indices.'); end
+                idx = idx(:)';
+                idx = idx(idx>=1 & idx<=Ncells);
+                if isempty(idx), error('Filter selected zero valid cells.'); end
+                selectedCellIndices = unique(idx);
+                cellFilterExpr = expr;
+                traceSelectionMode = 'Filter';
+                renderTraces();
+            catch ME
+                warndlg(sprintf('Invalid filter expression:\n%s', ME.message), 'Traces');
+            end
+        end
+
+        function startLassoSelection(~,~)
+            try
+                figure(hMovieFig);
+                hPoly = drawpolygon(hAxes);
+                pos = hPoly.Position; % Nx2 [x y]
+                coords = generationState.physicalCoords;
+                in = inpolygon(coords(:,1), coords(:,2), pos(:,1), pos(:,2));
+                selectedCellIndices = find(in);
+                if isempty(selectedCellIndices)
+                    warndlg('No cells inside selection.', 'Traces');
+                    return;
+                end
+                traceSelectionMode = 'Lasso';
+                renderTraces();
+            catch ME
+                warndlg(sprintf('Lasso selection failed:\n%s', ME.message), 'Traces');
+            end
+        end
+
+        function renderTraces()
+            if ~isgraphics(hTracesFig) || ~ishold(traceAxes)
+                % Ensure axes exists
+            end
+            if ~isgraphics(hTracesFig) || ~isgraphics(traceAxes)
+                return;
+            end
+            % Determine active indices
+            Ncells = size(precomputedMovie,1);
+            switch traceSelectionMode
+                case 'All', activeIdx = 1:Ncells;
+                otherwise
+                    if isempty(selectedCellIndices), activeIdx = 1:Ncells; else, activeIdx = selectedCellIndices; end
+            end
+            tSec = (0:size(precomputedMovie,2)-1) ./ frameRate;
+            % Clear previous
+            if isgraphics(traceAvgLine), delete(traceAvgLine); end
+            if ~isempty(tracePerCellLines)
+                for ii=1:numel(tracePerCellLines)
+                    if isgraphics(tracePerCellLines(ii)), delete(tracePerCellLines(ii)); end
+                end
+            end
+            tracePerCellLines = [];
+            % Plot
+            axes(traceAxes);
+            hold(traceAxes,'off');
+            if ~traceShowAverageOnly
+                tracePerCellLines = plot(traceAxes, tSec, precomputedMovie(activeIdx, :)');
+                hold(traceAxes,'on');
+            end
+            avgTrace = mean(precomputedMovie(activeIdx, :), 1, 'omitnan');
+            traceAvgLine = plot(traceAxes, tSec, avgTrace, 'k', 'LineWidth', 2);
+            hold(traceAxes,'on');
+            % (Re)create cursor line
+            if ~isgraphics(traceCursorLine)
+                traceCursorLine = xline(traceAxes, 0, 'r-');
+            end
+            xlim(traceAxes, [tSec(1) tSec(end)]);
+        end
+
+        function updateTraceCursor(frameIdx)
+            if ~isgraphics(hTracesFig) || ~isgraphics(traceAxes), return; end
+            t = (frameIdx-1) / frameRate;
+            if isgraphics(traceCursorLine)
+                set(traceCursorLine, 'Value', t);
+            else
+                axes(traceAxes); traceCursorLine = xline(traceAxes, t, 'r-');
             end
         end
 
