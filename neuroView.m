@@ -1477,7 +1477,7 @@ updateDisplayMode();
                 end
                 if ~hasTracesFig
                     hTracesFig = figure('Name','Cell Time Traces','NumberTitle','off','Position',[1220 100 600 450], 'CloseRequestFcn', @closeTracesWindow);
-                    traceAxes = axes('Parent', hTracesFig, 'Units','normalized','Position',[0.10 0.30 0.85 0.65]);
+                    traceAxes = axes('Parent', hTracesFig, 'Units','normalized','Position',[0.10 0.36 0.85 0.59]);
                     xlabel(traceAxes,'Time (s)'); ylabel(traceAxes,'Activity');
                     
                     % Controls
@@ -1488,6 +1488,18 @@ updateDisplayMode();
                     hFilterEdit = uicontrol('Parent', hTracesFig, 'Style','edit','String',cellFilterExpr,'Units','normalized','Position',[0.25 0.12 0.37 0.07]);
                     uicontrol('Parent', hTracesFig, 'Style','pushbutton','String','Apply','Units','normalized','Position',[0.64 0.12 0.10 0.07],'Callback', @(s,e) applyFilterExpr(get(hFilterEdit,'String')));
                     hAvgOnly = uicontrol('Parent', hTracesFig, 'Style','checkbox','String','Average only','Value',traceShowAverageOnly,'Units','normalized','Position',[0.76 0.12 0.18 0.07],'Callback', @(s,e) setAvgOnly(get(hAvgOnly,'Value')));
+                    
+                    % Y-Limits controls
+                    uicontrol('Parent', hTracesFig, 'Style','text','String','Y-limits:','Units','normalized','Position',[0.10 0.03 0.15 0.06],'HorizontalAlignment','left');
+                    hYAuto = uicontrol('Parent', hTracesFig, 'Style','checkbox','String','Auto','Value',traceYLimAuto,'Units','normalized','Position',[0.25 0.03 0.12 0.06],'Callback', @toggleYAuto);
+                    hYMinEdit = uicontrol('Parent', hTracesFig, 'Style','edit','String','', 'Units','normalized','Position',[0.39 0.03 0.15 0.06]);
+                    hYMaxEdit = uicontrol('Parent', hTracesFig, 'Style','edit','String','', 'Units','normalized','Position',[0.56 0.03 0.15 0.06]);
+                    uicontrol('Parent', hTracesFig, 'Style','pushbutton','String','Set','Units','normalized','Position',[0.74 0.03 0.09 0.06],'Callback', @applyYLimFromUI);
+                    uicontrol('Parent', hTracesFig, 'Style','pushbutton','String','Auto Now','Units','normalized','Position',[0.84 0.03 0.11 0.06],'Callback', @autoScaleOnce);
+                    
+                    % Initialize Y-lim UI
+                    updateYLimUIFromAxes();
+                    setYLimUIEnabled();
                     
                     % Initialize selection UI state
                     switch traceSelectionMode
@@ -1519,6 +1531,49 @@ updateDisplayMode();
             function setAvgOnly(val)
                 traceShowAverageOnly = val;
                 renderTraces();
+            end
+            function toggleYAuto(src, ~)
+                traceYLimAuto = get(src,'Value');
+                setYLimUIEnabled();
+                if traceYLimAuto
+                    traceYLim = [];
+                    autoScaleOnce();
+                else
+                    applyYLimFromUI();
+                end
+            end
+            function setYLimUIEnabled()
+                if traceYLimAuto
+                    set(hYMinEdit,'Enable','off'); set(hYMaxEdit,'Enable','off');
+                else
+                    set(hYMinEdit,'Enable','on'); set(hYMaxEdit,'Enable','on');
+                end
+            end
+            function updateYLimUIFromAxes()
+                if ~(isscalar(traceAxes) && isgraphics(traceAxes)), return; end
+                yl = get(traceAxes,'YLim');
+                set(hYMinEdit,'String',num2str(yl(1)));
+                set(hYMaxEdit,'String',num2str(yl(2)));
+            end
+            function applyYLimFromUI(~,~)
+                if traceYLimAuto, return; end
+                ymin = str2double(get(hYMinEdit,'String'));
+                ymax = str2double(get(hYMaxEdit,'String'));
+                if isnan(ymin) || isnan(ymax) || ymin >= ymax
+                    warndlg('Invalid Y-limits. Provide numeric min<max.','Traces');
+                    return;
+                end
+                traceYLim = [ymin ymax];
+                if isgraphics(traceAxes), ylim(traceAxes, traceYLim); end
+                updateTraceCursor(round(get(hSeekSlider,'Value')));
+            end
+            function autoScaleOnce(~,~)
+                % Let MATLAB auto-scale based on current plot data
+                if isgraphics(traceAxes)
+                    axis(traceAxes, 'tight');
+                    updateYLimUIFromAxes();
+                    updateTraceCursor(round(get(hSeekSlider,'Value')));
+                end
             end
         end
 
@@ -1649,6 +1704,17 @@ updateDisplayMode();
                 set(traceCursorLine, 'YData', get(traceAxes, 'YLim'));
             end
             xlim(traceAxes, [tSec(1) tSec(end)]);
+            % Apply y-limits per current mode
+            if exist('traceYLimAuto','var') && ~traceYLimAuto && exist('traceYLim','var') && ~isempty(traceYLim)
+                ylim(traceAxes, traceYLim);
+            else
+                axis(traceAxes,'tight');
+            end
+            % Sync UI if it exists
+            try
+                updateYLimUIFromAxes();
+            catch
+            end
         end
 
         function updateTraceCursor(frameIdx)
