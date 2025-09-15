@@ -1553,8 +1553,22 @@ updateDisplayMode();
         function startLassoSelection(~,~)
             try
                 figure(hMovieFig);
-                hPoly = drawpolygon(hAxes);
-                pos = hPoly.Position; % Nx2 [x y]
+                % R2016b-compatible polygon selection using impoly (Image Processing Toolbox)
+                hPoly = [];
+                useImp = exist('impoly','file') == 2;
+                if useImp
+                    hPoly = impoly(hAxes);
+                    pos = wait(hPoly); % Nx2
+                else
+                    % Fallback: instruct user and use ginput to collect vertices
+                    uiwait(warndlg('Click vertices for polygon, press Enter when done.', 'Lasso Selection','modal'));
+                    [xv, yv] = getpoly_manual(hAxes);
+                    pos = [xv(:) yv(:)];
+                end
+                if isempty(pos) || size(pos,2) ~= 2
+                    warndlg('No polygon defined.', 'Traces');
+                    return;
+                end
                 coords = generationState.physicalCoords;
                 in = inpolygon(coords(:,1), coords(:,2), pos(:,1), pos(:,2));
                 selectedCellIndices = find(in);
@@ -1564,8 +1578,34 @@ updateDisplayMode();
                 end
                 traceSelectionMode = 'Lasso';
                 renderTraces();
+                if useImp && ~isempty(hPoly) && isvalid(hPoly), delete(hPoly); end
             catch ME
                 warndlg(sprintf('Lasso selection failed:\n%s', ME.message), 'Traces');
+            end
+        end
+
+        function [xv, yv] = getpoly_manual(ax)
+            if nargin < 1 || isempty(ax), ax = gca; end
+            axes(ax);
+            [xv, yv] = ginput_n();
+            if numel(xv) >= 3
+                xv(end+1) = xv(1); yv(end+1) = yv(1); % close
+            else
+                xv = []; yv = [];
+            end
+        end
+
+        function [x, y] = ginput_n()
+            x = []; y = [];
+            % Collect clicks until Enter/Return
+            but = 1;
+            while ~isempty(but)
+                [xi, yi, but] = ginput(1);
+                if isempty(but) || any(but == [13 3]) % Enter or Return
+                    break;
+                end
+                x(end+1,1) = xi; %#ok<AGROW>
+                y(end+1,1) = yi; %#ok<AGROW>
             end
         end
 
@@ -1600,9 +1640,13 @@ updateDisplayMode();
             avgTrace = mean(precomputedMovie(activeIdx, :), 1, 'omitnan');
             traceAvgLine = plot(traceAxes, tSec, avgTrace, 'k', 'LineWidth', 2);
             hold(traceAxes,'on');
-            % (Re)create cursor line
+            % (Re)create cursor line (R2016b compatible)
             if ~(isscalar(traceCursorLine) && isgraphics(traceCursorLine))
-                traceCursorLine = xline(traceAxes, 0, 'r-');
+                yl = get(traceAxes, 'YLim');
+                traceCursorLine = line(traceAxes, [0 0], yl, 'Color', 'r', 'LineWidth', 1);
+            else
+                % Ensure the cursor spans current Y-limits
+                set(traceCursorLine, 'YData', get(traceAxes, 'YLim'));
             end
             xlim(traceAxes, [tSec(1) tSec(end)]);
         end
@@ -1613,9 +1657,11 @@ updateDisplayMode();
             end
             t = (frameIdx-1) / frameRate;
             if isscalar(traceCursorLine) && isgraphics(traceCursorLine)
-                set(traceCursorLine, 'Value', t);
+                yl = get(traceAxes, 'YLim');
+                set(traceCursorLine, 'XData', [t t], 'YData', yl);
             else
-                axes(traceAxes); traceCursorLine = xline(traceAxes, t, 'r-');
+                yl = get(traceAxes, 'YLim');
+                traceCursorLine = line(traceAxes, [t t], yl, 'Color', 'r', 'LineWidth', 1);
             end
         end
 
