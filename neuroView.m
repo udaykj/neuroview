@@ -2422,12 +2422,21 @@ updateDisplayMode();
                 win_min = str2double(get(hDetrendWindowInput, 'String'));
                 if isnan(win_min) || win_min <=0, error('Invalid detrend window.'); end
                 
-                win_frames = round(win_min * 60 * N.nativeFrameRate);
+                % Use a safe native frame rate; older states may not carry it
+                nativeFR = 1;
+                if isfield(N,'nativeFrameRate') && ~isempty(N.nativeFrameRate) && isfinite(N.nativeFrameRate) && N.nativeFrameRate > 0
+                    nativeFR = N.nativeFrameRate;
+                else
+                    appendToStatus('Native frame rate missing; assuming 1 Hz for detrend window.');
+                end
+                win_frames = max(1, round(win_min * 60 * nativeFR));
                 
-                F_reshaped = reshape(F_processed, N.numNeurons, []);
+                % Derive dimensions from current data to avoid reshape mismatch
+                [nNeurons, nTimepoints, nTrials] = size(F_processed);
+                F_reshaped = reshape(F_processed, nNeurons, []);
                 F_movmedian = movmedian(F_reshaped, win_frames, 2);
                 F_detrended_reshaped = F_reshaped - F_movmedian;
-                F_processed = reshape(F_detrended_reshaped, N.numNeurons, N.numTimepoints, N.numTrials);
+                F_processed = reshape(F_detrended_reshaped, nNeurons, nTimepoints, nTrials);
             end
             
             if get(hForcePositiveCheckbox, 'Value')
