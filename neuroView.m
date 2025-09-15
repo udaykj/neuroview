@@ -1506,6 +1506,14 @@ updateDisplayMode();
                     % Initialize Y-lim UI
                     updateYLimUIFromAxes();
                     setYLimUIEnabled();
+
+                    % Share handles for use by other callbacks
+                    tracesUI.hFilterEdit = hFilterEdit;
+                    tracesUI.hSelPopup = hSelPopup;
+                    tracesUI.hYAuto = hYAuto;
+                    tracesUI.hYMinEdit = hYMinEdit;
+                    tracesUI.hYMaxEdit = hYMaxEdit;
+                    setappdata(hTracesFig, 'tracesUI', tracesUI);
                     
                     % Initialize selection UI state
                     switch traceSelectionMode
@@ -1637,7 +1645,25 @@ updateDisplayMode();
                     warndlg('No cells inside selection.', 'Traces');
                     return;
                 end
-                traceSelectionMode = 'Lasso';
+                % Save selection to base workspace and update filter field
+                varName = 'nvSelectedIdx';
+                try, assignin('base', varName, selectedCellIndices); catch, end
+                cellFilterExpr = varName;
+                % Try to apply filter expression to set indices via the normal path
+                try, applyFilterExpr(varName); catch, end
+                traceSelectionMode = 'Filter';
+                % Update Traces UI filter field and selection dropdown, if available
+                try
+                    ui = getappdata(hTracesFig, 'tracesUI');
+                    if isstruct(ui)
+                        if isfield(ui, 'hFilterEdit') && isgraphics(ui.hFilterEdit), set(ui.hFilterEdit, 'String', varName); end
+                        if isfield(ui, 'hSelPopup') && isgraphics(ui.hSelPopup)
+                            % Options order is {'All','Lasso','Filter'} => set to 3
+                            set(ui.hSelPopup, 'Value', 3);
+                        end
+                    end
+                catch
+                end
                 renderTraces();
                 if useImp && ~isempty(hPoly) && isvalid(hPoly), delete(hPoly); end
             catch ME
