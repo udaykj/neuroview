@@ -1466,7 +1466,16 @@ updateDisplayMode();
                 return;
             end
             try
-                if ~isgraphics(hTracesFig)
+                % Robustly determine if we already have a valid traces figure
+                hasTracesFig = false;
+                if isscalar(hTracesFig) && isgraphics(hTracesFig)
+                    try
+                        hasTracesFig = strcmp(get(hTracesFig,'Type'), 'figure');
+                    catch
+                        hasTracesFig = false;
+                    end
+                end
+                if ~hasTracesFig
                     hTracesFig = figure('Name','Cell Time Traces','NumberTitle','off','Position',[1220 100 600 450], 'CloseRequestFcn', @closeTracesWindow);
                     traceAxes = axes('Parent', hTracesFig, 'Units','normalized','Position',[0.10 0.30 0.85 0.65]);
                     xlabel(traceAxes,'Time (s)'); ylabel(traceAxes,'Activity');
@@ -1574,10 +1583,10 @@ updateDisplayMode();
             end
             tSec = (0:size(precomputedMovie,2)-1) ./ frameRate;
             % Clear previous
-            if isgraphics(traceAvgLine), delete(traceAvgLine); end
+            if isscalar(traceAvgLine) && isgraphics(traceAvgLine), delete(traceAvgLine); end
             if ~isempty(tracePerCellLines)
                 for ii=1:numel(tracePerCellLines)
-                    if isgraphics(tracePerCellLines(ii)), delete(tracePerCellLines(ii)); end
+                    if isscalar(tracePerCellLines(ii)) && isgraphics(tracePerCellLines(ii)), delete(tracePerCellLines(ii)); end
                 end
             end
             tracePerCellLines = [];
@@ -1592,7 +1601,7 @@ updateDisplayMode();
             traceAvgLine = plot(traceAxes, tSec, avgTrace, 'k', 'LineWidth', 2);
             hold(traceAxes,'on');
             % (Re)create cursor line
-            if ~isgraphics(traceCursorLine)
+            if ~(isscalar(traceCursorLine) && isgraphics(traceCursorLine))
                 traceCursorLine = xline(traceAxes, 0, 'r-');
             end
             xlim(traceAxes, [tSec(1) tSec(end)]);
@@ -1603,7 +1612,7 @@ updateDisplayMode();
                 return;
             end
             t = (frameIdx-1) / frameRate;
-            if isgraphics(traceCursorLine)
+            if isscalar(traceCursorLine) && isgraphics(traceCursorLine)
                 set(traceCursorLine, 'Value', t);
             else
                 axes(traceAxes); traceCursorLine = xline(traceAxes, t, 'r-');
