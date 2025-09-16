@@ -969,7 +969,6 @@ updateDisplayMode();
             hMovieSpeedDropdown = uicontrol('Parent', hPlaybackPanel, 'Style', 'popupmenu', 'String', {'0.5x', '1x', '2x', '4x', '8x', '16x'}, 'Value', 2, 'Units', 'normalized', 'Position', [0.55 0.05 0.15 0.4], 'Callback', @updateSpeed, 'FontSize', 9);
             uicontrol(hPlaybackPanel, 'Style', 'pushbutton', 'String', 'Notes', 'Units', 'normalized', 'Position', [0.68 0.05 0.10 0.4], 'Callback', @openNotesWindow, 'FontSize', 9);
             uicontrol(hPlaybackPanel, 'Style', 'pushbutton', 'String', 'Save...', 'Units', 'normalized', 'Position', [0.80 0.05 0.10 0.4], 'Callback', @saveMovie, 'FontSize', 9);
-            uicontrol(hPlaybackPanel, 'Style', 'pushbutton', 'String', 'Gamma...', 'Units', 'normalized', 'Position', [0.71 0.05 0.08 0.4], 'Callback', @openGammaDialog, 'FontSize', 9);
             uicontrol(hPlaybackPanel, 'Style', 'pushbutton', 'String', 'Traces', 'Units', 'normalized', 'Position', [0.92 0.05 0.06 0.4], 'Callback', @openTracesWindow, 'FontSize', 9);
 
             % Setup display mode options based on available data
@@ -1315,24 +1314,29 @@ updateDisplayMode();
             elseif filterIndex == 2 || filterIndex == 3 % Save video (AVI or MP4) with offscreen rendering
                 set(hText, 'String', 'Saving video...'); drawnow;
                 try
-                    % Choose export resolution
+                    % Combined export settings dialog
                     resOptions = {'Native','1080p','1440p','2160p'};
-                    [resIdx, ok] = listdlg('PromptString','Select export resolution:', 'SelectionMode','single', 'ListString', resOptions, 'InitialValue', 2);
-                    if ~ok, if wasPlaying, start(movieTimer); end, return; end
-                    resChoice = resOptions{resIdx};
-                    
-                    % Optional: choose clip range (start/end frames)
+                    resStr = strjoin(resOptions, '|');
                     kDefaultStart = round(get(hSeekSlider,'Value')); if kDefaultStart < 1, kDefaultStart = 1; end
                     kDefaultEnd = numMovieFrames;
-                    clipAns = inputdlg({'Start frame (1-based):','End frame:'}, 'Export clip range', [1 35; 1 35], {num2str(kDefaultStart), num2str(kDefaultEnd)});
-                    if isempty(clipAns), kStart = kDefaultStart; kEnd = kDefaultEnd; else
-                        kStart = round(str2double(clipAns{1})); kEnd = round(str2double(clipAns{2}));
-                        if isnan(kStart), kStart = kDefaultStart; end
-                        if isnan(kEnd), kEnd = kDefaultEnd; end
-                        if kStart < 1, kStart = 1; end
-                        if kEnd > numMovieFrames, kEnd = numMovieFrames; end
-                        if kStart > kEnd, kStart = 1; kEnd = numMovieFrames; end
-                    end
+                    defaults = {resOptions{2}, num2str(kDefaultStart), num2str(kDefaultEnd), num2str(appState.exportGamma.mp4), num2str(appState.exportGamma.avi)};
+                    prompt = {'Resolution (choose: Native|1080p|1440p|2160p):','Start frame (1-based):','End frame:','MP4 gamma:','AVI gamma:'};
+                    answ = inputdlg(prompt, 'Export settings', [1 50; 1 20; 1 20; 1 20; 1 20], defaults);
+                    if isempty(answ), if wasPlaying, start(movieTimer); end, return; end
+                    % Parse resolution
+                    resChoice = answ{1};
+                    if ~any(strcmp(resOptions, resChoice)), resChoice = '1080p'; end
+                    % Parse frames
+                    kStart = round(str2double(answ{2})); kEnd = round(str2double(answ{3}));
+                    if isnan(kStart), kStart = kDefaultStart; end
+                    if isnan(kEnd), kEnd = kDefaultEnd; end
+                    if kStart < 1, kStart = 1; end
+                    if kEnd > numMovieFrames, kEnd = numMovieFrames; end
+                    if kStart > kEnd, kStart = 1; kEnd = numMovieFrames; end
+                    % Parse gamma and update session settings
+                    gMp4 = str2double(answ{4}); gAvi = str2double(answ{5});
+                    if isfinite(gMp4) && gMp4 > 0, appState.exportGamma.mp4 = gMp4; end
+                    if isfinite(gAvi) && gAvi > 0, appState.exportGamma.avi = gAvi; end
 
                     % Determine codec from extension
                     [~,~,ext] = fileparts(savePath);
