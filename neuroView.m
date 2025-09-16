@@ -1318,15 +1318,26 @@ updateDisplayMode();
                     selectedMode = modeOptions{get(displayHandles.modeDropdown, 'Value')};
                     isTiffMode = strcmp(generationState.mode, 'TIFF');
                     nativeW = []; nativeH = [];
-                    if isTiffMode && strcmp(selectedMode,'Image')
-                        % Native image dimensions
-                        nativeH = size(precomputedMovie,1); nativeW = size(precomputedMovie,2);
+                    % Precompute a frame for sizing (respects Grid/Areas transformations)
+                    firstDataForSizing = getModeDataForFrame(1);
+                    % Aspect from data when possible
+                    if ~strcmp(selectedMode,'Cells') && ~isempty(firstDataForSizing)
+                        aspect = size(firstDataForSizing,2) / size(firstDataForSizing,1);
+                    else
+                        % fallback to physical extents
+                        if isTiffMode
+                            Tloc = generationState.TIFF; aspect = (Tloc.pixelWidth / Tloc.x_pixels_per_unit) / (Tloc.pixelHeight / Tloc.y_pixels_per_unit);
+                        else
+                            Nloc = generationState.Neural; aspect = diff(Nloc.plotXLim) / diff(Nloc.plotYLim);
+                        end
+                        if ~isfinite(aspect) || aspect <= 0, aspect = 1; end
                     end
-
-                    % Fallback aspect from axes limits
-                    xl = get(hAxes, 'XLim'); yl = get(hAxes, 'YLim');
-                    xspan = max(1, diff(xl)); yspan = max(1, diff(yl));
-                    aspect = xspan / yspan; % width/height
+                    % Native dims
+                    if isTiffMode && strcmp(selectedMode,'Image')
+                        nativeH = size(precomputedMovie,1); nativeW = size(precomputedMovie,2);
+                    elseif ~strcmp(selectedMode,'Cells') && ~isempty(firstDataForSizing)
+                        nativeH = size(firstDataForSizing,1); nativeW = size(firstDataForSizing,2);
+                    end
 
                     % Compute target size inline (avoid nested function nesting rules)
                     switch resChoice
@@ -1334,21 +1345,24 @@ updateDisplayMode();
                             if ~isempty(nativeW) && ~isempty(nativeH)
                                 targetW = nativeW; targetH = nativeH;
                             else
-                                targetH = 1080; targetW = round(targetH * aspect);
+                                targetH = 1080; targetW = max(1, round(targetH * aspect));
                             end
                         case '1080p'
-                            targetH = 1080; targetW = round(targetH * aspect);
+                            targetH = 1080; targetW = max(1, round(targetH * aspect));
                         case '1440p'
-                            targetH = 1440; targetW = round(targetH * aspect);
+                            targetH = 1440; targetW = max(1, round(targetH * aspect));
                         case '2160p'
-                            targetH = 2160; targetW = round(targetH * aspect);
+                            targetH = 2160; targetW = max(1, round(targetH * aspect));
                         otherwise
-                            targetH = 1080; targetW = round(targetH * aspect);
+                            targetH = 1080; targetW = max(1, round(targetH * aspect));
                     end
                     if targetW < 1, targetW = 1; end
                     if targetH < 1, targetH = 1; end
-                    if mod(targetW,2)~=0, targetW = targetW+1; end
-                    if mod(targetH,2)~=0, targetH = targetH+1; end
+                    % Ensure even dimensions only for MP4 encoder
+                    if strcmpi(ext,'.mp4')
+                        if mod(targetW,2)~=0, targetW = targetW+1; end
+                        if mod(targetH,2)~=0, targetH = targetH+1; end
+                    end
 
                     % Setup offscreen figure/axes
                     hOffFig = figure('Visible','off','Units','pixels','Position',[100 100 targetW targetH], 'Color','k');
@@ -1356,7 +1370,13 @@ updateDisplayMode();
                     axis(hOffAx,'off');
                     set(hOffAx,'YDir','normal');
                     colormap(hOffAx, colormap(hAxes));
-                    caxis(hOffAx, get(hAxes,'CLim'));
+                    % Lock contrast to current slider values for fidelity
+                    try
+                        cmin = get(contrastHandles.minSlider,'Value'); cmax = get(contrastHandles.maxSlider,'Value');
+                        if isfinite(cmin) && isfinite(cmax) && cmin < cmax, caxis(hOffAx, [cmin cmax]); end
+                    catch
+                        caxis(hOffAx, get(hAxes,'CLim'));
+                    end
 
                     % Plotted object handles
                     offPlot = [];
@@ -1409,8 +1429,11 @@ updateDisplayMode();
                         end
                     end
                     % Overlays
+                    overlayFontPx = 36; % fixed pixel size for consistent on-screen size across outputs
                     hTextTime = text(hOffAx, 0.99, 0.97, '', 'Units','normalized','Color','w','FontWeight','bold','BackgroundColor','k','HorizontalAlignment','right','VerticalAlignment','top');
+                    set(hTextTime,'FontUnits','pixels','FontSize',overlayFontPx);
                     hTextSpeed = text(hOffAx, 0.99, 0.03, '', 'Units','normalized','Color','w','FontWeight','bold','BackgroundColor','k','HorizontalAlignment','right');
+                    set(hTextSpeed,'FontUnits','pixels','FontSize',overlayFontPx);
 
                     % Render loop
                     hWait = waitbar(0, sprintf('Saving video... 0/%d', numMovieFrames));
