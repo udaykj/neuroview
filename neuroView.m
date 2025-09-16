@@ -2323,7 +2323,7 @@ updateDisplayMode();
                 evaluatedTrials = evalin('base', trialSelectionStr);
                 selectedTrials = ifelse(islogical(evaluatedTrials), find(evaluatedTrials), evaluatedTrials);
                 
-                trialFilePaths = {}; trialLengths = [];
+                trialFilePaths = {}; trialLengths = []; framesPerTrial = {}; infoFirstPerTrial = {};
                 for trialNum = selectedTrials(:)'
                     trialFileName = sprintf('%s_%05d.tif', T.fileBaseName, trialNum);
                     trialFilePath = fullfile(T.selectedFolderPath, trialFileName);
@@ -2332,6 +2332,8 @@ updateDisplayMode();
                         info = imfinfo(trialFilePath);
                         trialFrames = getFramesForPlaneChannel_TIFF(planeNum, channelNum, numel(info));
                         trialLengths(end+1) = numel(trialFrames);
+                        framesPerTrial{end+1} = trialFrames;
+                        infoFirstPerTrial{end+1} = info(1);
                     end
                 end
                 if isempty(trialFilePaths), error('No valid trial files found.'); end
@@ -2346,16 +2348,15 @@ updateDisplayMode();
                     minTrialLength = min(minTrialLength, round(maxFramesVal));
                 end
                 
-                info_first = imfinfo(trialFilePaths{1});
-                firstFrame = stitchFrame_TIFF(imread(trialFilePaths{1},1), info_first(1), T.roiData);
+                % Use the first frame from the selected plane/channel for sizing
+                firstFrame = stitchFrame_TIFF(imread(trialFilePaths{1}, framesPerTrial{1}(1)), infoFirstPerTrial{1}, T.roiData);
                 avgMovie = zeros(size(firstFrame,1), size(firstFrame,2), minTrialLength, 'double');
                 
                 for i = 1:minTrialLength
                     sumFrame = zeros(size(firstFrame), 'double');
                     for k = 1:numel(trialFilePaths)
-                        info = imfinfo(trialFilePaths{k});
-                        framesInFile = getFramesForPlaneChannel_TIFF(planeNum, channelNum, numel(info));
-                        sumFrame = sumFrame + double(stitchFrame_TIFF(imread(trialFilePaths{k}, framesInFile(i)), info(1), T.roiData));
+                        framesInFile = framesPerTrial{k};
+                        sumFrame = sumFrame + double(stitchFrame_TIFF(imread(trialFilePaths{k}, framesInFile(i)), infoFirstPerTrial{k}, T.roiData));
                     end
                     avgMovie(:,:,i) = sumFrame / numel(trialFilePaths);
                 end
