@@ -136,7 +136,10 @@ hSmoothingLabel = uicontrol('Parent', hProcessingPanel, 'Style', 'text', 'String
 hSmoothingWindowInput = uicontrol('Parent', hProcessingPanel, 'Style', 'edit', 'String', '0', 'Position', [370 120 40 20]);
 % Line 3
 uicontrol('Parent', hProcessingPanel, 'Style', 'text', 'String', 'Trials:', 'Position', [20 90 50 20], 'HorizontalAlignment', 'right', 'BackgroundColor', [0.94 0.94 0.94]);
-hTrialInput = uicontrol('Parent', hProcessingPanel, 'Style', 'edit', 'String', ':', 'Position', [80 90 330 20]);
+hTrialInput = uicontrol('Parent', hProcessingPanel, 'Style', 'edit', 'String', ':', 'Position', [80 90 230 20]);
+% TIFF: optional frame cap for faster iteration
+hMaxFramesLabel = uicontrol('Parent', hProcessingPanel, 'Style', 'text', 'String', 'Max Frames:', 'Position', [320 90 60 20], 'HorizontalAlignment', 'right', 'BackgroundColor', [0.94 0.94 0.94]);
+hMaxFramesInput = uicontrol('Parent', hProcessingPanel, 'Style', 'edit', 'String', '', 'Position', [385 90 40 20]);
 % Line 4
 uicontrol('Parent', hProcessingPanel, 'Style', 'text', 'String', 'Display Mode:', 'Position', [0 60 70 20], 'HorizontalAlignment', 'right', 'BackgroundColor', [0.94 0.94 0.94]);
 hDisplayMode = uicontrol('Parent', hProcessingPanel, 'Style', 'popupmenu', 'String', {'Raw/Corrected', 'dF/F (Initial Frames)', 'dF/F (Median)', 'dF/F (Reference Trials)'}, ...
@@ -1866,6 +1869,10 @@ updateDisplayMode();
                 
                 % Now that UI is configured for the right mode, populate it with loaded state data
                 updateGUIFromState(appState.loadedStateSnapshot);
+                % Restore maxFrames if present
+                if strcmp(loadedMode,'TIFF') && isfield(appState.loadedStateSnapshot,'ui') && isfield(appState.loadedStateSnapshot.ui,'maxFrames')
+                    set(hMaxFramesInput,'String', appState.loadedStateSnapshot.ui.maxFrames);
+                end
                 showInfoCallback(); 
                 set(hModeSelector, 'Enable', 'off');
                 set(hContextInfoLabel, 'String', sprintf('Loaded: %s', loadedMode));
@@ -1979,6 +1986,7 @@ updateDisplayMode();
             ui.plane = get(hPlaneDropdown, 'Value');
             ui.channel = get(hChannelDropdown, 'Value');
             ui.smoothingSigma = get(hSmoothingWindowInput, 'String');
+            ui.maxFrames = get(hMaxFramesInput, 'String');
         else
             ui.neuropilCoeff = get(hNeuropilCoeffInput, 'String');
             ui.detrend = get(hDetrendCheckbox, 'Value');
@@ -2036,6 +2044,7 @@ updateDisplayMode();
             S.plane = get(hPlaneDropdown, 'Value');
             S.channel = get(hChannelDropdown, 'Value');
             S.smoothingSigma = get(hSmoothingWindowInput, 'String');
+            S.maxFrames = get(hMaxFramesInput, 'String');
         else
             S.neuropilCoeff = get(hNeuropilCoeffInput, 'String');
         end
@@ -2073,6 +2082,7 @@ updateDisplayMode();
                 set(hPlaneDropdown, 'Value', S.plane);
                 set(hChannelDropdown, 'Value', S.channel);
                 set(hSmoothingWindowInput, 'String', S.smoothingSigma);
+                if isfield(S,'maxFrames'), set(hMaxFramesInput,'String', S.maxFrames); end
             else
                 set(hNeuropilCoeffInput, 'String', S.neuropilCoeff);
             end
@@ -2088,6 +2098,7 @@ updateDisplayMode();
             set(hPlaneDropdown, 'Value', state.ui.plane);
             set(hChannelDropdown, 'Value', state.ui.channel);
             set(hSmoothingWindowInput, 'String', state.ui.smoothingSigma);
+            if isfield(state.ui,'maxFrames'), set(hMaxFramesInput,'String', state.ui.maxFrames); end
         else % Neural
             set(hNeuropilCoeffInput, 'String', state.ui.neuropilCoeff);
             set(hDetrendCheckbox, 'Value', state.ui.detrend);
@@ -2310,6 +2321,13 @@ updateDisplayMode();
                 appendToStatus(sprintf('Found %d trials. Averaging frames...', numel(trialFilePaths)));
                 minTrialLength = min(trialLengths);
                 
+                % Apply user cap on frames if provided
+                maxFramesStr = get(hMaxFramesInput,'String');
+                maxFramesVal = str2double(maxFramesStr);
+                if ~isnan(maxFramesVal) && maxFramesVal > 0
+                    minTrialLength = min(minTrialLength, round(maxFramesVal));
+                end
+                
                 info_first = imfinfo(trialFilePaths{1});
                 firstFrame = stitchFrame_TIFF(imread(trialFilePaths{1},1), info_first(1), T.roiData);
                 avgMovie = zeros(size(firstFrame,1), size(firstFrame,2), minTrialLength, 'double');
@@ -2326,6 +2344,12 @@ updateDisplayMode();
             else
                 info = imfinfo(T.fullFilePath);
                 allFrames = getFramesForPlaneChannel_TIFF(planeNum, channelNum, numel(info));
+                % Apply user cap on frames if provided
+                maxFramesStr = get(hMaxFramesInput,'String');
+                maxFramesVal = str2double(maxFramesStr);
+                if ~isnan(maxFramesVal) && maxFramesVal > 0
+                    allFrames = allFrames(1:min(numel(allFrames), round(maxFramesVal)));
+                end
                 firstFrame = stitchFrame_TIFF(imread(T.fullFilePath,1), info(1), T.roiData);
                 avgMovie = zeros(size(firstFrame,1), size(firstFrame,2), numel(allFrames), 'double');
                 for i = 1:numel(allFrames)
