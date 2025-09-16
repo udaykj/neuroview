@@ -1373,7 +1373,11 @@ updateDisplayMode();
                     % Lock contrast to current slider values for fidelity
                     try
                         cmin = get(contrastHandles.minSlider,'Value'); cmax = get(contrastHandles.maxSlider,'Value');
-                        if isfinite(cmin) && isfinite(cmax) && cmin < cmax, caxis(hOffAx, [cmin cmax]); end
+                        if isfinite(cmin) && isfinite(cmax) && cmin < cmax
+                            % Slightly widen export dynamic range to reduce clipping by encoders
+                            span = cmax - cmin; pad = 0.01 * span;
+                            caxis(hOffAx, [cmin - pad, cmax + pad]);
+                        end
                     catch
                         caxis(hOffAx, get(hAxes,'CLim'));
                     end
@@ -1452,7 +1456,20 @@ updateDisplayMode();
                         set(hTextTime,'String', tStr); set(hTextSpeed,'String', spStr);
                         drawnow;
                         fr = getframe(hOffFig);
-                        writeVideo(v, fr.cdata);
+                        frameRGB = fr.cdata;
+                        % Heuristic gamma compensation to better match on-screen contrast per codec
+                        exportGamma = 1.0;
+                        if strcmpi(ext,'.mp4')
+                            exportGamma = 1.12; % deepen blacks slightly for H.264
+                        elseif strcmpi(ext,'.avi')
+                            exportGamma = 0.92; % lift shadows slightly for Motion JPEG
+                        end
+                        if abs(exportGamma - 1.0) > 1e-3
+                            f = im2double(frameRGB);
+                            f = f .^ exportGamma;
+                            frameRGB = im2uint8(min(max(f,0),1));
+                        end
+                        writeVideo(v, frameRGB);
                         if ishandle(hWait), waitbar(k/numMovieFrames, hWait, sprintf('Saving video... %d/%d', k, numMovieFrames)); end
                     end
                     
