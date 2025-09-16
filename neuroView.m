@@ -53,6 +53,8 @@ appState.loadedCache = struct('TIFF', struct('data', [], 'fingerprint', []), ...
                               'Neural', struct('data', [], 'fingerprint', []));
 appState.sessionUiCache = struct('TIFF', [], 'Neural', []); % Explicit session UI snapshots
 appState.sessionMode = 'TIFF'; % Remembers the mode of the current session when viewing a loaded state
+% Export settings (session-scoped)
+appState.exportGamma = struct('mp4', 1.12, 'avi', 0.92);
 
 % --- GUI Setup ---
 hFig = figure('Name', 'NeuroView - Unified Viewer', ...
@@ -263,6 +265,21 @@ updateDisplayMode();
             stateToShow = appState.loadedStateSnapshot;
         else
             stateToShow = appState; % Use current session state
+        end
+
+        function openGammaDialog(~,~)
+            try
+                prompt = {'MP4 gamma (e.g., 1.12):','AVI gamma (e.g., 0.92):'};
+                defaults = {num2str(appState.exportGamma.mp4), num2str(appState.exportGamma.avi)};
+                answ = inputdlg(prompt, 'Export gamma settings', [1 35; 1 35], defaults);
+                if isempty(answ), return; end
+                gMp4 = str2double(answ{1}); gAvi = str2double(answ{2});
+                if isfinite(gMp4) && gMp4 > 0, appState.exportGamma.mp4 = gMp4; end
+                if isfinite(gAvi) && gAvi > 0, appState.exportGamma.avi = gAvi; end
+                appendToStatus(sprintf('Export gamma updated: MP4=%.3f, AVI=%.3f', appState.exportGamma.mp4, appState.exportGamma.avi));
+            catch ME
+                warndlg(sprintf('Error updating gamma settings:\n%s', ME.message), 'Gamma');
+            end
         end
 
         mode = getStateMode(stateToShow);
@@ -952,6 +969,7 @@ updateDisplayMode();
             hMovieSpeedDropdown = uicontrol('Parent', hPlaybackPanel, 'Style', 'popupmenu', 'String', {'0.5x', '1x', '2x', '4x', '8x', '16x'}, 'Value', 2, 'Units', 'normalized', 'Position', [0.55 0.05 0.15 0.4], 'Callback', @updateSpeed, 'FontSize', 9);
             uicontrol(hPlaybackPanel, 'Style', 'pushbutton', 'String', 'Notes', 'Units', 'normalized', 'Position', [0.68 0.05 0.10 0.4], 'Callback', @openNotesWindow, 'FontSize', 9);
             uicontrol(hPlaybackPanel, 'Style', 'pushbutton', 'String', 'Save...', 'Units', 'normalized', 'Position', [0.80 0.05 0.10 0.4], 'Callback', @saveMovie, 'FontSize', 9);
+            uicontrol(hPlaybackPanel, 'Style', 'pushbutton', 'String', 'Gamma...', 'Units', 'normalized', 'Position', [0.71 0.05 0.08 0.4], 'Callback', @openGammaDialog, 'FontSize', 9);
             uicontrol(hPlaybackPanel, 'Style', 'pushbutton', 'String', 'Traces', 'Units', 'normalized', 'Position', [0.92 0.05 0.06 0.4], 'Callback', @openTracesWindow, 'FontSize', 9);
 
             % Setup display mode options based on available data
@@ -1477,9 +1495,9 @@ updateDisplayMode();
                         % Heuristic gamma compensation to better match on-screen contrast per codec
                         exportGamma = 1.0;
                         if strcmpi(ext,'.mp4')
-                            exportGamma = 1.12; % deepen blacks slightly for H.264
+                            exportGamma = appState.exportGamma.mp4;
                         elseif strcmpi(ext,'.avi')
-                            exportGamma = 0.92; % lift shadows slightly for Motion JPEG
+                            exportGamma = appState.exportGamma.avi;
                         end
                         if abs(exportGamma - 1.0) > 1e-3
                             f = im2double(frameRGB);
