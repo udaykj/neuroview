@@ -1299,6 +1299,19 @@ updateDisplayMode();
                     [resIdx, ok] = listdlg('PromptString','Select export resolution:', 'SelectionMode','single', 'ListString', resOptions, 'InitialValue', 2);
                     if ~ok, if wasPlaying, start(movieTimer); end, return; end
                     resChoice = resOptions{resIdx};
+                    
+                    % Optional: choose clip range (start/end frames)
+                    kDefaultStart = round(get(hSeekSlider,'Value')); if kDefaultStart < 1, kDefaultStart = 1; end
+                    kDefaultEnd = numMovieFrames;
+                    clipAns = inputdlg({'Start frame (1-based):','End frame:'}, 'Export clip range', [1 35; 1 35], {num2str(kDefaultStart), num2str(kDefaultEnd)});
+                    if isempty(clipAns), kStart = kDefaultStart; kEnd = kDefaultEnd; else
+                        kStart = round(str2double(clipAns{1})); kEnd = round(str2double(clipAns{2}));
+                        if isnan(kStart), kStart = kDefaultStart; end
+                        if isnan(kEnd), kEnd = kDefaultEnd; end
+                        if kStart < 1, kStart = 1; end
+                        if kEnd > numMovieFrames, kEnd = numMovieFrames; end
+                        if kStart > kEnd, kStart = 1; kEnd = numMovieFrames; end
+                    end
 
                     % Determine codec from extension
                     [~,~,ext] = fileparts(savePath);
@@ -1319,7 +1332,7 @@ updateDisplayMode();
                     isTiffMode = strcmp(generationState.mode, 'TIFF');
                     nativeW = []; nativeH = [];
                     % Precompute a frame for sizing (respects Grid/Areas transformations)
-                    firstDataForSizing = getModeDataForFrame(1);
+                    firstDataForSizing = getModeDataForFrame(kStart);
                     % Aspect from data when possible
                     if ~strcmp(selectedMode,'Cells') && ~isempty(firstDataForSizing)
                         aspect = size(firstDataForSizing,2) / size(firstDataForSizing,1);
@@ -1440,9 +1453,10 @@ updateDisplayMode();
                     set(hTextSpeed,'FontUnits','pixels','FontSize',overlayFontPx);
 
                     % Render loop
-                    hWait = waitbar(0, sprintf('Saving video... 0/%d', numMovieFrames));
+                    nOutFrames = kEnd - kStart + 1;
+                    hWait = waitbar(0, sprintf('Saving video... 0/%d', nOutFrames));
                     originalSliderValue = get(hSeekSlider, 'Value');
-                    for k = 1:numMovieFrames
+                    for k = kStart:kEnd
                         % Update plot
                         frameData = getModeDataForFrame(k);
                         if strcmp(selectedMode,'Cells')
@@ -1470,13 +1484,13 @@ updateDisplayMode();
                             frameRGB = im2uint8(min(max(f,0),1));
                         end
                         writeVideo(v, frameRGB);
-                        if ishandle(hWait), waitbar(k/numMovieFrames, hWait, sprintf('Saving video... %d/%d', k, numMovieFrames)); end
+                        if ishandle(hWait), waitbar((k - kStart + 1)/nOutFrames, hWait, sprintf('Saving video... %d/%d', (k - kStart + 1), nOutFrames)); end
                     end
                     
                     close(v); if ishandle(hWait), close(hWait); end
                     if isgraphics(hOffFig), close(hOffFig); end
                     updateFrame(round(originalSliderValue)); 
-                    set(hText, 'String', sprintf('Video saved to:\n%s\nOutput size: %dx%d', savePath, targetW, targetH));
+                    set(hText, 'String', sprintf('Video saved to:\n%s\nOutput size: %dx%d\nFrames: %d', savePath, targetW, targetH, nOutFrames));
                 catch ME
                     if exist('hWait','var')&&ishandle(hWait), close(hWait); end
                     try, if isgraphics(hOffFig), close(hOffFig); end, end
