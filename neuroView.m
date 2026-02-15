@@ -2408,6 +2408,7 @@ updateDisplayMode();
         physicalWidth = max(cXY_phys(:,2) + szXY_phys(:,2));
         if isfield(si_rois(1).scanfields(1), 'pixelToRefTransform')
             Tscale = 1/si_rois(1).scanfields(1).pixelToRefTransform(1);
+            Tscale = 150;
             physicalHeight = physicalHeight*Tscale;
             physicalWidth = physicalWidth*Tscale;
         end
@@ -2564,7 +2565,8 @@ updateDisplayMode();
             else
                 % Try base workspace first (back-compat for users who define variables there)
                 try
-                    selectedTrials = evalin('base', str);
+                    evalin('base', str);
+                    selectedTrials = evalin('base','ans');
                 catch
                     selectedTrials = [];
                 end
