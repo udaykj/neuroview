@@ -310,14 +310,19 @@ updateDisplayMode();
                 if ~success, set(hText, 'String', errMsg); return; end
                 appendToStatus('Averaging data (Loaded State, raw reload)...');
                 if strcmp(localState.mode, 'TIFF')
-                    avgData = mean(processedData, 3);
+                    timeDim = ifelse(ndims(processedData) == 4, 4, 3);
+                    avgData = mean(processedData, timeDim);
                 else
                     avgData = mean(processedData, 2);
                 end
             else
                 set(hText, 'String', 'Averaging pre-loaded movie data...'); drawnow;
                 isTiffMode = strcmp(localState.mode, 'TIFF');
-                timeDim = ifelse(isTiffMode, 3, 2);
+                if isTiffMode
+                    timeDim = ifelse(ndims(localState.movieData) == 4, 4, 3);
+                else
+                    timeDim = 2;
+                end
                 avgData = mean(localState.movieData, timeDim);
             end
         else
@@ -326,7 +331,8 @@ updateDisplayMode();
 
             appendToStatus('Averaging data...');
             if strcmp(localState.mode, 'TIFF')
-                avgData = mean(processedData, 3);
+                timeDim = ifelse(ndims(processedData) == 4, 4, 3);
+                avgData = mean(processedData, timeDim);
             else
                 avgData = mean(processedData, 2);
             end
@@ -357,15 +363,19 @@ updateDisplayMode();
             if any(isnan(p_base)) || p_base(1) >= p_base(2), p_base = [0 1]; end
             if strcmp(localState.mode, 'TIFF'), modeContrasts.Image = p_base; else, modeContrasts.Cells = p_base; end
             
+            avgDataFor2D = localState.avgData;
+            if strcmp(localState.mode, 'TIFF') && ndims(localState.avgData) == 3 && size(localState.avgData, 3) == 3
+                avgDataFor2D = mean(localState.avgData, 3);
+            end
             if ~isempty(localState.Neural.vareaData)
-                [areaImg, ~] = createAreaAverageImage(localState.avgData, localState, true);
+                [areaImg, ~] = createAreaAverageImage(avgDataFor2D, localState, true);
                 p_area = prctile(areaImg(:), [2 98]); 
                 if any(isnan(p_area)) || p_area(1) >= p_area(2), p_area = [0 1]; end
                 modeContrasts.Areas = p_area;
             end
             
             gridSize = 30;
-            if strcmp(localState.mode, 'TIFF'), [gridData, ~, ~] = binData_TIFF(localState.avgData, localState.TIFF, gridSize);
+            if strcmp(localState.mode, 'TIFF'), [gridData, ~, ~] = binData_TIFF(avgDataFor2D, localState.TIFF, gridSize);
             else, [gridData, ~, ~] = binData_Neural(localState.Neural, localState.avgData, gridSize, localState.physicalCoords, false); end
             p_grid = prctile(gridData(:), [2 98]); 
             if any(isnan(p_grid)) || p_grid(1) >= p_grid(2), p_grid = [0 1]; end
@@ -421,18 +431,27 @@ updateDisplayMode();
                 T = localState.TIFF;
                 physW = T.pixelWidth / T.x_pixels_per_unit;
                 physH = T.pixelHeight / T.y_pixels_per_unit;
+                avgDataFor2D = localState.avgData;
+                if ndims(localState.avgData) == 3 && size(localState.avgData, 3) == 3
+                    avgDataFor2D = mean(localState.avgData, 3);
+                end
                 if strcmp(selectedMode, 'Image')
-                    hPlotObject = imagesc(hAxes, [0 physW], [0 physH], localState.avgData);
+                    if ndims(localState.avgData) == 3 && size(localState.avgData, 3) == 3
+                        cdata = double(min(1, max(0, localState.avgData)));
+                        hPlotObject = imagesc(hAxes, [0 physW], [0 physH], cdata);
+                    else
+                        hPlotObject = imagesc(hAxes, [0 physW], [0 physH], localState.avgData);
+                    end
                 elseif strcmp(selectedMode, 'Grid')
                     gridSize = str2double(get(displayHandles.gridSizeEdit, 'String'));
                     if isnan(gridSize) || gridSize < 1, gridSize = 30; end
-                    if get(displayHandles.interpolateCheckbox, 'Value') == 1, gridData = imresize(localState.avgData, [gridSize gridSize], 'bicubic');
-                    else, [gridData, ~, ~] = binData_TIFF(localState.avgData, localState.TIFF, gridSize); end
+                    if get(displayHandles.interpolateCheckbox, 'Value') == 1, gridData = imresize(avgDataFor2D, [gridSize gridSize], 'bicubic');
+                    else, [gridData, ~, ~] = binData_TIFF(avgDataFor2D, localState.TIFF, gridSize); end
                     grid_x = linspace(0, physW, gridSize); grid_y = linspace(0, physH, gridSize);
                     hPlotObject = imagesc(hAxes, 'XData', grid_x, 'YData', grid_y, 'CData', gridData);
                 elseif strcmp(selectedMode, 'Areas')
                     if isempty(vareaHandles), error('Load visual areas first.'); end
-                    [areaImg, ~] = createAreaAverageImage(localState.avgData, localState, get(vareaHandles.flipYCheckbox, 'Value'));
+                    [areaImg, ~] = createAreaAverageImage(avgDataFor2D, localState, get(vareaHandles.flipYCheckbox, 'Value'));
                     hPlotObject = imagesc(hAxes, [0 physW], [0 physH], areaImg);
                 end
             else % Neural Mode
@@ -1112,11 +1131,15 @@ updateDisplayMode();
                 physW = T.pixelWidth / T.x_pixels_per_unit;
                 physH = T.pixelHeight / T.y_pixels_per_unit;
                 if strcmp(selectedMode, 'Image')
-                    cdata = currentFrameData;
-                    if isRgbMovie && isfloat(cdata) && max(cdata(:)) <= 1
-                        cdata = cdata;
-                    elseif isRgbMovie && isfloat(cdata)
+                    if isRgbMovie
+                        % Ensure m-by-n-by-3 double in [0,1] for truecolor CData
+                        cdata = double(squeeze(currentFrameData));
+                        if size(cdata, 3) ~= 3
+                            cdata = mean(cdata, 3); cdata = repmat(cdata, [1 1 3]);
+                        end
                         cdata = min(1, max(0, cdata));
+                    else
+                        cdata = currentFrameData;
                     end
                     set(hPlotObject, 'CData', cdata, 'XData', [0 physW], 'YData', [0 physH]);
                 else % Grid (downsampled image)
@@ -1167,17 +1190,32 @@ updateDisplayMode();
                     'filled', 'Marker', markerHandles.shapeValues{get(markerHandles.shapeDropdown, 'Value')});
                 set(markerHandles.panel, 'UserData', hPlotObject);
             else % Grid, Image, or Area mode - all use imagesc
-                hPlotObject = imagesc(hAxes, 'CData', []);
                 if isImageData % TIFF
-                              T = generationState.TIFF;
-                              physW = T.pixelWidth / T.x_pixels_per_unit;
-                              physH = T.pixelHeight / T.y_pixels_per_unit;
-                              set(hPlotObject, 'XData', [0 physW], 'YData', [0 physH]);
-                else % Neural (Area or Grid Mode)
-                              N = generationState.Neural;
-                              set(hPlotObject, 'XData', N.plotXLim, 'YData', N.plotYLim);
+                    T = generationState.TIFF;
+                    physW = T.pixelWidth / T.x_pixels_per_unit;
+                    physH = T.pixelHeight / T.y_pixels_per_unit;
                 end
-                updateFrame(currentFrameIdx); % Draw the frame
+                if isRgbMovie && strcmp(selectedMode, 'Image')
+                    % Create truecolor image with first frame so CData is m-by-n-by-3 from the start
+                    firstCData = precomputedMovie(:,:,:,currentFrameIdx);
+                    firstCData = double(squeeze(firstCData));
+                    firstCData = min(1, max(0, firstCData));
+                    if size(firstCData, 3) == 3
+                        hPlotObject = imagesc(hAxes, [0 physW], [0 physH], firstCData);
+                    else
+                        hPlotObject = imagesc(hAxes, 'CData', []);
+                        set(hPlotObject, 'XData', [0 physW], 'YData', [0 physH]);
+                    end
+                else
+                    hPlotObject = imagesc(hAxes, 'CData', []);
+                    if isImageData % TIFF
+                        set(hPlotObject, 'XData', [0 physW], 'YData', [0 physH]);
+                    else % Neural (Area or Grid Mode)
+                        N = generationState.Neural;
+                        set(hPlotObject, 'XData', N.plotXLim, 'YData', N.plotYLim);
+                    end
+                end
+                updateFrame(currentFrameIdx); % Draw the frame (sync counter; redundant CData when we already set firstCData)
             end
             
             setupPlotAxes(hAxes, generationState.mode, generationState.TIFF, generationState.Neural);
