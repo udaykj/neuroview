@@ -1505,6 +1505,7 @@ updateDisplayMode();
                             frameRGB = fr.cdata;
                         else
                             % Image mode: crop to current zoom/pan, then build frame from CData + colormap
+                            set(hTextTime,'String', tStr); set(hTextSpeed,'String', spStr);
                             nR = size(frameData,1); nC = size(frameData,2);
                             dx = dataXExtent(2)-dataXExtent(1); dy = dataYExtent(2)-dataYExtent(1);
                             if dx<=0, dx=1; end; if dy<=0, dy=1; end
@@ -1523,13 +1524,22 @@ updateDisplayMode();
                             frameRGB = ind2rgb(idx, exportCMap);
                             frameRGB = uint8(round(frameRGB * 255));
                             frameRGB = imresize(frameRGB, [targetH targetW]);
-                            % Overlay time and speed text (deterministic)
+                            % Overlay time and speed (insertText if available, else getframe from axes). R2016b+ compatible.
+                            overlaysAdded = false;
                             if exist('insertText','file')
                                 try
-                                    frameRGB = insertText(frameRGB, [targetW - 220, 20], tStr, 'FontSize', 36, 'FontColor', 'white', 'TextBoxColor', 'black');
-                                    frameRGB = insertText(frameRGB, [targetW - 100, targetH - 50], spStr, 'FontSize', 36, 'FontColor', 'white', 'TextBoxColor', 'black');
+                                    % Use TextColor/BoxColor for R2016b; newer releases also accept FontColor/TextBoxColor
+                                    frameRGB = insertText(frameRGB, [targetW - 220, 20], tStr, 'FontSize', 36, 'TextColor', 'white', 'BoxColor', 'black');
+                                    frameRGB = insertText(frameRGB, [targetW - 100, targetH - 50], spStr, 'FontSize', 36, 'TextColor', 'white', 'BoxColor', 'black');
+                                    overlaysAdded = true;
                                 catch
                                 end
+                            end
+                            if ~overlaysAdded
+                                set(offPlot,'CData', frameData);
+                                drawnow;
+                                fr = getframe(hOffAx);
+                                frameRGB = fr.cdata;
                             end
                         end
                         writeVideo(v, frameRGB);
