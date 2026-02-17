@@ -1353,30 +1353,35 @@ updateDisplayMode();
                     if isprop(v,'Quality'), v.Quality = 95; end
                     open(v);
 
-                    % Determine aspect and target size
+                    % Determine aspect and target size (use current zoom/pan from movie player)
                     modeOptions = get(displayHandles.modeDropdown, 'String');
                     selectedMode = modeOptions{get(displayHandles.modeDropdown, 'Value')};
                     isTiffMode = strcmp(generationState.mode, 'TIFF');
                     nativeW = []; nativeH = [];
-                    % Precompute a frame for sizing (respects Grid/Areas transformations)
-                    firstDataForSizing = getModeDataForFrame(kStart);
-                    % Aspect from data when possible
-                    if ~strcmp(selectedMode,'Cells') && ~isempty(firstDataForSizing)
-                        aspect = size(firstDataForSizing,2) / size(firstDataForSizing,1);
+                    axXLim = get(hAxes, 'XLim'); axYLim = get(hAxes, 'YLim');
+                    if isTiffMode
+                        Tloc = generationState.TIFF;
+                        dataXExtent = [0, Tloc.pixelWidth/Tloc.x_pixels_per_unit];
+                        dataYExtent = [0, Tloc.pixelHeight/Tloc.y_pixels_per_unit];
                     else
-                        % fallback to physical extents
-                        if isTiffMode
-                            Tloc = generationState.TIFF; aspect = (Tloc.pixelWidth / Tloc.x_pixels_per_unit) / (Tloc.pixelHeight / Tloc.y_pixels_per_unit);
-                        else
-                            Nloc = generationState.Neural; aspect = diff(Nloc.plotXLim) / diff(Nloc.plotYLim);
-                        end
-                        if ~isfinite(aspect) || aspect <= 0, aspect = 1; end
+                        Nloc = generationState.Neural;
+                        dataXExtent = Nloc.plotXLim;
+                        dataYExtent = Nloc.plotYLim;
                     end
-                    % Native dims
-                    if isTiffMode && strcmp(selectedMode,'Image')
-                        nativeH = size(precomputedMovie,1); nativeW = size(precomputedMovie,2);
-                    elseif ~strcmp(selectedMode,'Cells') && ~isempty(firstDataForSizing)
-                        nativeH = size(firstDataForSizing,1); nativeW = size(firstDataForSizing,2);
+                    % Aspect from current view (zoomed/panned) so export matches what is played
+                    aspect = diff(axXLim) / diff(axYLim);
+                    if ~isfinite(aspect) || aspect <= 0, aspect = 1; end
+                    % Native dims = cropped view size in pixels (for Native resolution choice)
+                    firstDataForSizing = getModeDataForFrame(kStart);
+                    if ~strcmp(selectedMode,'Cells') && ~isempty(firstDataForSizing)
+                        nR = size(firstDataForSizing,1); nC = size(firstDataForSizing,2);
+                        dx = dataXExtent(2)-dataXExtent(1); dy = dataYExtent(2)-dataYExtent(1);
+                        if dx<=0, dx=1; end; if dy<=0, dy=1; end
+                        c1 = 1 + (nC-1)*(axXLim(1)-dataXExtent(1))/dx; c2 = 1 + (nC-1)*(axXLim(2)-dataXExtent(1))/dx;
+                        r1 = 1 + (nR-1)*(axYLim(1)-dataYExtent(1))/dy; r2 = 1 + (nR-1)*(axYLim(2)-dataYExtent(1))/dy;
+                        c1 = max(1,min(nC,round(c1))); c2 = max(1,min(nC,round(c2))); r1 = max(1,min(nR,round(r1))); r2 = max(1,min(nR,round(r2)));
+                        if c1>c2, [c1,c2]=deal(c2,c1); end; if r1>r2, [r1,r2]=deal(r2,r1); end
+                        nativeW = c2 - c1 + 1; nativeH = r2 - r1 + 1;
                     end
 
                     % Compute target size inline (avoid nested function nesting rules)
@@ -1447,6 +1452,8 @@ updateDisplayMode();
                     end
                     setupPlotAxes(hOffAx, generationState.mode, generationState.TIFF, generationState.Neural);
                     axis(hOffAx,'off');
+                    % Use current zoom/pan so export matches movie player view
+                    xlim(hOffAx, axXLim); ylim(hOffAx, axYLim);
                     % Draw varea overlays once if enabled
                     if ~isempty(generationState.Neural) && ~isempty(generationState.Neural.vareaData)
                         if exist('vareaHandles','var') && ~isempty(vareaHandles) && get(vareaHandles.toggleAllCheckbox,'Value') == 1
@@ -1497,12 +1504,19 @@ updateDisplayMode();
                             fr = getframe(hOffAx);
                             frameRGB = fr.cdata;
                         else
-                            % Image mode: build frame from CData + colormap (no getframe = no renderer flicker)
-                            set(offPlot,'CData', frameData);
+                            % Image mode: crop to current zoom/pan, then build frame from CData + colormap
+                            nR = size(frameData,1); nC = size(frameData,2);
+                            dx = dataXExtent(2)-dataXExtent(1); dy = dataYExtent(2)-dataYExtent(1);
+                            if dx<=0, dx=1; end; if dy<=0, dy=1; end
+                            c1 = 1 + (nC-1)*(axXLim(1)-dataXExtent(1))/dx; c2 = 1 + (nC-1)*(axXLim(2)-dataXExtent(1))/dx;
+                            r1 = 1 + (nR-1)*(axYLim(1)-dataYExtent(1))/dy; r2 = 1 + (nR-1)*(axYLim(2)-dataYExtent(1))/dy;
+                            c1 = max(1,min(nC,round(c1))); c2 = max(1,min(nC,round(c2))); r1 = max(1,min(nR,round(r1))); r2 = max(1,min(nR,round(r2)));
+                            if c1>c2, [c1,c2]=deal(c2,c1); end; if r1>r2, [r1,r2]=deal(r2,r1); end
+                            frameDataCropped = frameData(r1:r2, c1:c2);
                             n = size(exportCMap, 1);
                             climSpan = exportCLim(2) - exportCLim(1);
                             if climSpan <= 0, climSpan = 1; end
-                            norm = (double(frameData) - exportCLim(1)) / climSpan;
+                            norm = (double(frameDataCropped) - exportCLim(1)) / climSpan;
                             norm = min(1, max(0, norm));
                             idx = round(norm * (n - 1)) + 1;
                             idx = min(n, max(1, idx));
