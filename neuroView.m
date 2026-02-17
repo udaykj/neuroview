@@ -54,7 +54,7 @@ appState.loadedCache = struct('TIFF', struct('data', [], 'fingerprint', []), ...
 appState.sessionUiCache = struct('TIFF', [], 'Neural', []); % Explicit session UI snapshots
 appState.sessionMode = 'TIFF'; % Remembers the mode of the current session when viewing a loaded state
 % Export settings (session-scoped)
-appState.exportGamma = struct('mp4', 1.12, 'avi', 0.92);
+appState.exportGamma = struct('mp4', 1.0, 'avi', 1.0); % 1.0 = no correction (avoids export flicker)
 
 % --- GUI Setup ---
 hFig = figure('Name', 'NeuroView - Unified Viewer', ...
@@ -1422,6 +1422,8 @@ updateDisplayMode();
                     catch
                         caxis(hOffAx, get(hAxes,'CLim'));
                     end
+                    exportCLim = get(hOffAx,'CLim');
+                    exportCMap = colormap(hOffAx);
 
                     % Plotted object handles
                     offPlot = [];
@@ -1485,33 +1487,36 @@ updateDisplayMode();
                     hWait = waitbar(0, sprintf('Saving video... 0/%d', nOutFrames));
                     originalSliderValue = get(hSeekSlider, 'Value');
                     for k = kStart:kEnd
-                        % Update plot
                         frameData = getModeDataForFrame(k);
-                        if strcmp(selectedMode,'Cells')
-                            set(offPlot,'CData', frameData);
-                        else
-                            set(offPlot,'CData', frameData);
-                        end
-                        % Update overlays
                         tSec = (k-1) / frameRate; tStr = sprintf('t = %.1fs', round(tSec*10)/10);
                         spStr = sprintf('%gx', speedVal);
-                        set(hTextTime,'String', tStr); set(hTextSpeed,'String', spStr);
-                        drawnow;
-                        % Capture axes only to avoid frame-to-frame figure background/rendering flicker
-                        fr = getframe(hOffAx);
-                        frameRGB = fr.cdata;
-                        % Heuristic gamma compensation to better match on-screen contrast per codec
-                        exportGamma = 1.0;
-                        if strcmpi(ext,'.mp4')
-                            exportGamma = appState.exportGamma.mp4;
-                        elseif strcmpi(ext,'.avi')
-                            exportGamma = appState.exportGamma.avi;
-                        end
-                        if abs(exportGamma - 1.0) > 1e-3
-                            f = im2double(frameRGB);
-                            f = min(max(f, 0), 1) .^ exportGamma;
-                            % Stable rounding to avoid single-frame intensity flicker
-                            frameRGB = uint8(round(min(max(f * 255, 0), 255)));
+                        if strcmp(selectedMode,'Cells')
+                            set(offPlot,'CData', frameData);
+                            set(hTextTime,'String', tStr); set(hTextSpeed,'String', spStr);
+                            drawnow;
+                            fr = getframe(hOffAx);
+                            frameRGB = fr.cdata;
+                        else
+                            % Image mode: build frame from CData + colormap (no getframe = no renderer flicker)
+                            set(offPlot,'CData', frameData);
+                            n = size(exportCMap, 1);
+                            climSpan = exportCLim(2) - exportCLim(1);
+                            if climSpan <= 0, climSpan = 1; end
+                            norm = (double(frameData) - exportCLim(1)) / climSpan;
+                            norm = min(1, max(0, norm));
+                            idx = round(norm * (n - 1)) + 1;
+                            idx = min(n, max(1, idx));
+                            frameRGB = ind2rgb(idx, exportCMap);
+                            frameRGB = uint8(round(frameRGB * 255));
+                            frameRGB = imresize(frameRGB, [targetH targetW]);
+                            % Overlay time and speed text (deterministic)
+                            if exist('insertText','file')
+                                try
+                                    frameRGB = insertText(frameRGB, [targetW - 220, 20], tStr, 'FontSize', 36, 'FontColor', 'white', 'TextBoxColor', 'black');
+                                    frameRGB = insertText(frameRGB, [targetW - 100, targetH - 50], spStr, 'FontSize', 36, 'FontColor', 'white', 'TextBoxColor', 'black');
+                                catch
+                                end
+                            end
                         end
                         writeVideo(v, frameRGB);
                         if ishandle(hWait), waitbar((k - kStart + 1)/nOutFrames, hWait, sprintf('Saving video... %d/%d', (k - kStart + 1), nOutFrames)); end
