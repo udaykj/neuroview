@@ -1515,7 +1515,8 @@ updateDisplayMode();
                             c1 = max(1,min(nC,round(c1))); c2 = max(1,min(nC,round(c2))); r1 = max(1,min(nR,round(r1))); r2 = max(1,min(nR,round(r2)));
                             if c1>c2, [c1,c2]=deal(c2,c1); end; if r1>r2, [r1,r2]=deal(r2,r1); end
                             frameDataCropped = frameData(r1:r2, c1:c2);
-                            if strcmp(axYDir,'reverse'), frameDataCropped = flipud(frameDataCropped); end
+                            % Match video convention: row 1 = top of frame. MATLAB YDir 'normal' draws row 1 at bottom.
+                            if strcmp(axYDir,'normal'), frameDataCropped = flipud(frameDataCropped); end
                             if strcmp(axXDir,'reverse'), frameDataCropped = fliplr(frameDataCropped); end
                             n = size(exportCMap, 1);
                             climSpan = exportCLim(2) - exportCLim(1);
