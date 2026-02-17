@@ -3301,16 +3301,32 @@ updateDisplayMode();
         set(hCtrlPanel, 'UserData', panelUD);
         rangeVals = [0.5, 1, 2, 4, 8];
         function updateCh1Range(~,~)
-            v = get(hCh1MinRange,'Value'); mult = rangeVals(v);
             lo = get(hCh1Min,'UserData'); hi = get(hCh1Max,'UserData');
-            r = (hi - lo) * mult * 0.5; if r <= 0, r = 0.5; end
-            set(hCh1Min,'Min',lo-r,'Max',lo+r); set(hCh1Max,'Min',hi-r,'Max',hi+r);
+            baseRange = abs(hi - lo); if baseRange <= 0, baseRange = 1; end
+            multMin = rangeVals(get(hCh1MinRange,'Value'));
+            multMax = rangeVals(get(hCh1MaxRange,'Value'));
+            halfMin = baseRange * multMin; halfMax = baseRange * multMax;
+            newMinLo = lo - halfMin; newMinHi = lo + halfMin;
+            newMaxLo = hi - halfMax; newMaxHi = hi + halfMax;
+            set(hCh1Min,'Min',newMinLo,'Max',newMinHi);
+            set(hCh1Max,'Min',newMaxLo,'Max',newMaxHi);
+            cv = get(hCh1Min,'Value'); set(hCh1Min,'Value',max(newMinLo,min(newMinHi,cv)));
+            cv = get(hCh1Max,'Value'); set(hCh1Max,'Value',max(newMaxLo,min(newMaxHi,cv)));
+            applyMergeImage();
         end
         function updateCh2Range(~,~)
-            v = get(hCh2MinRange,'Value'); mult = rangeVals(v);
             lo = get(hCh2Min,'UserData'); hi = get(hCh2Max,'UserData');
-            r = (hi - lo) * mult * 0.5; if r <= 0, r = 0.5; end
-            set(hCh2Min,'Min',lo-r,'Max',lo+r); set(hCh2Max,'Min',hi-r,'Max',hi+r);
+            baseRange = abs(hi - lo); if baseRange <= 0, baseRange = 1; end
+            multMin = rangeVals(get(hCh2MinRange,'Value'));
+            multMax = rangeVals(get(hCh2MaxRange,'Value'));
+            halfMin = baseRange * multMin; halfMax = baseRange * multMax;
+            newMinLo = lo - halfMin; newMinHi = lo + halfMin;
+            newMaxLo = hi - halfMax; newMaxHi = hi + halfMax;
+            set(hCh2Min,'Min',newMinLo,'Max',newMinHi);
+            set(hCh2Max,'Min',newMaxLo,'Max',newMaxHi);
+            cv = get(hCh2Min,'Value'); set(hCh2Min,'Value',max(newMinLo,min(newMinHi,cv)));
+            cv = get(hCh2Max,'Value'); set(hCh2Max,'Value',max(newMaxLo,min(newMaxHi,cv)));
+            applyMergeImage();
         end
         set(hCh1MinRange,'Callback',@(s,e)updateCh1Range()); set(hCh1MaxRange,'Callback',@(s,e)updateCh1Range());
         set(hCh2MinRange,'Callback',@(s,e)updateCh2Range()); set(hCh2MaxRange,'Callback',@(s,e)updateCh2Range());
