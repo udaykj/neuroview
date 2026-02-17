@@ -381,7 +381,12 @@ updateDisplayMode();
             if any(isnan(p_grid)) || p_grid(1) >= p_grid(2), p_grid = [0 1]; end
             modeContrasts.Grid = p_grid;
 
-            contrastHandles = createContrastControls(hPlotFig, hAxes, [0.1 0.01 0.8 0.09], modeContrasts, displayHandles);
+            isMergeAvg = (strcmp(localState.mode, 'TIFF') && ndims(localState.avgData) == 3 && size(localState.avgData, 3) == 3);
+            if isMergeAvg
+                contrastHandles = createMergeContrastControls(hPlotFig, hAxes, [0.1 0.01 0.8 0.09], localState.avgData, displayHandles);
+            else
+                contrastHandles = createContrastControls(hPlotFig, hAxes, [0.1 0.01 0.8 0.09], modeContrasts, displayHandles);
+            end
             hPlotObject = []; 
             
             tiffModes = {'Image', 'Grid'}; neuralModes = {'Cells', 'Grid'};
@@ -403,9 +408,12 @@ updateDisplayMode();
             set(displayHandles.interpolateCheckbox, 'Callback', @(s,e) displayModeChanged_static());
             
             displayModeChanged_static(); % This calls resetSliders
+            if isMergeAvg && isfield(contrastHandles, 'applyMergeImage')
+                contrastHandles.applyMergeImage();
+            end
             if ~isempty(vareaHandles), vareaHandles.updateAll(); end
             
-            if ~isempty(playerStateToApply)
+            if ~isempty(playerStateToApply) && ~isMergeAvg
                 contrastHandles.setPlayerState(playerStateToApply);
             end
 
@@ -492,6 +500,9 @@ updateDisplayMode();
             if isfield(appState.loadedStateSnapshot, 'reloadRaw') && appState.loadedStateSnapshot.reloadRaw == 1
                 [processedData, generationState, success, errMsg] = getOrProcessData_LOADED();
                 if ~success, set(hText, 'String', errMsg); return; end
+                if strcmp(generationState.mode, 'TIFF') && ndims(processedData) == 4 && size(processedData, 3) == 3
+                    processedData = squeeze(processedData(:,:,1,:));
+                end
                 rollingAvg = round(str2double(get(hRollingAvgInput, 'String')));
                 if isnan(rollingAvg) || rollingAvg < 1, set(hText, 'String', 'Invalid Rolling Average.'); return; end
                 appendToStatus(sprintf('Applying rolling average of %d (Loaded State)...', rollingAvg));
@@ -505,11 +516,21 @@ updateDisplayMode();
             else
                 generationState = appState.loadedStateSnapshot;
                 precomputedMovie = generationState.movieData;
+                if ndims(precomputedMovie) == 4 && size(precomputedMovie, 3) == 3
+                    precomputedMovie = squeeze(precomputedMovie(:,:,1,:));
+                end
                 playerStateToApply = ifisfield(generationState, 'playerState');
-                set(hText, 'String', 'Playing pre-computed movie from loaded state...'); drawnow;
+                set(hText, 'String', 'Playing pre-computed movie from loaded state (channel 1)...'); drawnow;
             end
         else
-            [processedData, generationState, success, errMsg] = getOrProcessData();
+            channelForMovie = [];
+            if strcmp(appState.currentMode, 'TIFF') && isfield(appState, 'TIFF') && ~isempty(appState.TIFF) && appState.TIFF.parsedNumChannels >= 2
+                cv = get(hChannelDropdown, 'Value');
+                if cv == appState.TIFF.parsedNumChannels + 1
+                    channelForMovie = 1;
+                end
+            end
+            [processedData, generationState, success, errMsg] = getOrProcessData(channelForMovie);
             if ~success, set(hText, 'String', errMsg); return; end
             
             rollingAvg = round(str2double(get(hRollingAvgInput, 'String')));
@@ -529,16 +550,37 @@ updateDisplayMode();
     end
 
 %% --- DATA CACHING & PROCESSING ---
-    function [processedData, generationState, success, errMsg] = getOrProcessData()
+    function [processedData, generationState, success, errMsg] = getOrProcessData(channelOverride)
         processedData = []; 
         generationState = [];
         success = false; 
         errMsg = '';
+        if nargin < 1, channelOverride = []; end
 
         % 1. Get current settings fingerprint
         generationState = captureFullState();
 
-        % 2. Check against cache
+        % 2. When channel override (e.g. for movie when channel is All), skip cache and do not update cache
+        useOverride = strcmp(appState.currentMode, 'TIFF') && ~isempty(channelOverride);
+        if useOverride
+            if (isempty(appState.TIFF.fullFilePath) && isempty(appState.TIFF.selectedFolderPath))
+                errMsg = 'Please load TIFF data first.';
+                success = false;
+                return;
+            end
+            set(hText, 'String', 'Processing data (channel for movie)...'); drawnow;
+            [newData, procSuccess, procErrMsg] = getProcessedData(channelOverride);
+            if procSuccess
+                processedData = newData;
+                success = true;
+            else
+                errMsg = procErrMsg;
+                success = false;
+            end
+            return;
+        end
+
+        % 3. Check against cache
         if isfield(appState, 'sessionCache') && ...
            ~isempty(appState.sessionCache) && ...
            isfield(appState.sessionCache, 'fingerprint') && ...
@@ -846,12 +888,16 @@ updateDisplayMode();
 
 %% --- UNIFIED DATA PROCESSING ---
 
-    function [processedData, success, errMsg] = getProcessedData()
+    function [processedData, success, errMsg] = getProcessedData(channelOverride)
         processedData = []; success = false; errMsg = '';
         
         % Step 1: Get raw trial-averaged data for the current mode
         if strcmp(appState.currentMode, 'TIFF')
-            [trialAvgData, success_main, errMsg_main] = computeTrialAverageMovie_TIFF(get(hTrialInput, 'String'));
+            if nargin >= 1 && ~isempty(channelOverride)
+                [trialAvgData, success_main, errMsg_main] = computeTrialAverageMovie_TIFF(get(hTrialInput, 'String'), channelOverride);
+            else
+                [trialAvgData, success_main, errMsg_main] = computeTrialAverageMovie_TIFF(get(hTrialInput, 'String'));
+            end
         else % Neural
             [F_session_processed, success_pre, errMsg_pre] = preprocessFullSession_Neural();
             if ~success_pre, errMsg = errMsg_pre; success=false; return; end
@@ -882,7 +928,11 @@ updateDisplayMode();
                 elseif displayMode == 4 % dF/F (Reference Trials)
                     refTrialStr = get(hRefTrialsInput, 'String');
                     if strcmp(appState.currentMode, 'TIFF')
-                        [refData, s, e] = computeTrialAverageMovie_TIFF(refTrialStr);
+                        if nargin >= 1 && ~isempty(channelOverride)
+                            [refData, s, e] = computeTrialAverageMovie_TIFF(refTrialStr, channelOverride);
+                        else
+                            [refData, s, e] = computeTrialAverageMovie_TIFF(refTrialStr);
+                        end
                     else
                         [refData, s, e] = computeTrialAverageData_Neural(refTrialStr, F_session_processed);
                     end
@@ -2440,13 +2490,18 @@ updateDisplayMode();
         set(hText, 'String', T.metadataString);
     end
 
-    function [avgMovie, success, errMsg] = computeTrialAverageMovie_TIFF(trialSelectionStr)
+    function [avgMovie, success, errMsg] = computeTrialAverageMovie_TIFF(trialSelectionStr, channelOverride)
         avgMovie = []; success = false; errMsg = '';
         T = appState.TIFF;
         planeVal = get(hPlaneDropdown, 'Value');
         channelVal = get(hChannelDropdown, 'Value');
-        isMerge = (T.parsedNumChannels >= 2 && channelVal == T.parsedNumChannels + 1);
-        channelNum = ifelse(isMerge, 1, channelVal);
+        if nargin >= 2 && ~isempty(channelOverride)
+            isMerge = false;
+            channelNum = channelOverride;
+        else
+            isMerge = (T.parsedNumChannels >= 2 && channelVal == T.parsedNumChannels + 1);
+            channelNum = ifelse(isMerge, 1, channelVal);
+        end
         % Plane: value 1..N = single plane; value N+1 (when "All" present) = all planes
         if planeVal <= T.parsedNumPlanes
             planeList = planeVal;
@@ -3213,6 +3268,88 @@ updateDisplayMode();
                 set(hCtrlPanel, 'UserData', panelUD);
             end
         end
+    end
+
+    function handles = createMergeContrastControls(hParent, hAxes, panelPosition, avgDataRGB, displayHandles)
+        % avgDataRGB is (H,W,3): (:,:,1)=Ch1, (:,:,2)=Ch2, (:,:,3)=0. Independent contrast for Ch1 and Ch2 + color assignment.
+        if nargin < 5, displayHandles = []; end
+        hCtrlPanel = uipanel('Parent', hParent, 'Title', 'Merge contrast (Ch1 & Ch2)', 'Units', 'normalized', 'Position', panelPosition);
+        ch1 = double(avgDataRGB(:,:,1));
+        ch2 = double(avgDataRGB(:,:,2));
+        p1 = prctile(ch1(:), [2 98]); if p1(1) >= p1(2), p1 = [0 1]; end
+        p2 = prctile(ch2(:), [2 98]); if p2(1) >= p2(2), p2 = [0 1]; end
+        rangeOptions = {'0.5x', '1x', '2x', '4x', '8x'};
+        % Ch1 row
+        uicontrol(hCtrlPanel,'Style','text','String','Ch1 Black:','Units','normalized','Position',[0.01 0.72 0.10 0.22]);
+        hCh1Min = uicontrol(hCtrlPanel,'Style','slider','Units','normalized','Position',[0.12 0.75 0.22 0.2], 'UserData', p1(1), 'Min', p1(1)-0.1, 'Max', p1(2)+0.1, 'Value', p1(1));
+        hCh1MinRange = uicontrol(hCtrlPanel,'Style','popupmenu','String',rangeOptions,'Value',2,'Units','normalized','Position',[0.35 0.75 0.08 0.2]);
+        uicontrol(hCtrlPanel,'Style','text','String','Ch1 White:','Units','normalized','Position',[0.44 0.72 0.10 0.22]);
+        hCh1Max = uicontrol(hCtrlPanel,'Style','slider','Units','normalized','Position',[0.55 0.75 0.22 0.2], 'UserData', p1(2), 'Min', p1(1)-0.1, 'Max', p1(2)+0.1, 'Value', p1(2));
+        hCh1MaxRange = uicontrol(hCtrlPanel,'Style','popupmenu','String',rangeOptions,'Value',2,'Units','normalized','Position',[0.78 0.75 0.08 0.2]);
+        % Ch2 row
+        uicontrol(hCtrlPanel,'Style','text','String','Ch2 Black:','Units','normalized','Position',[0.01 0.42 0.10 0.22]);
+        hCh2Min = uicontrol(hCtrlPanel,'Style','slider','Units','normalized','Position',[0.12 0.45 0.22 0.2], 'UserData', p2(1), 'Min', p2(1)-0.1, 'Max', p2(2)+0.1, 'Value', p2(1));
+        hCh2MinRange = uicontrol(hCtrlPanel,'Style','popupmenu','String',rangeOptions,'Value',2,'Units','normalized','Position',[0.35 0.45 0.08 0.2]);
+        uicontrol(hCtrlPanel,'Style','text','String','Ch2 White:','Units','normalized','Position',[0.44 0.42 0.10 0.22]);
+        hCh2Max = uicontrol(hCtrlPanel,'Style','slider','Units','normalized','Position',[0.55 0.45 0.22 0.2], 'UserData', p2(2), 'Min', p2(1)-0.1, 'Max', p2(2)+0.1, 'Value', p2(2));
+        hCh2MaxRange = uicontrol(hCtrlPanel,'Style','popupmenu','String',rangeOptions,'Value',2,'Units','normalized','Position',[0.78 0.45 0.08 0.2]);
+        % Color assignment: Ch1→R Ch2→G, Ch1→G Ch2→R, Ch1→R Ch2→B, Ch1→B Ch2→R, Ch1→G Ch2→B, Ch1→B Ch2→G
+        colorAssignStr = {'Ch1→R Ch2→G','Ch1→G Ch2→R','Ch1→R Ch2→B','Ch1→B Ch2→R','Ch1→G Ch2→B','Ch1→B Ch2→G'};
+        uicontrol(hCtrlPanel,'Style','text','String','Color:','Units','normalized','Position',[0.01 0.08 0.12 0.22]);
+        hColorAssign = uicontrol(hCtrlPanel,'Style','popupmenu','String',colorAssignStr,'Value',1,'Units','normalized','Position',[0.14 0.12 0.35 0.2]);
+        panelUD = struct('ch1', ch1, 'ch2', ch2, 'hAxes', hAxes, 'displayHandles', displayHandles);
+        set(hCtrlPanel, 'UserData', panelUD);
+        rangeVals = [0.5, 1, 2, 4, 8];
+        function updateCh1Range(~,~)
+            v = get(hCh1MinRange,'Value'); mult = rangeVals(v);
+            lo = get(hCh1Min,'UserData'); hi = get(hCh1Max,'UserData');
+            r = (hi - lo) * mult * 0.5; if r <= 0, r = 0.5; end
+            set(hCh1Min,'Min',lo-r,'Max',lo+r); set(hCh1Max,'Min',hi-r,'Max',hi+r);
+        end
+        function updateCh2Range(~,~)
+            v = get(hCh2MinRange,'Value'); mult = rangeVals(v);
+            lo = get(hCh2Min,'UserData'); hi = get(hCh2Max,'UserData');
+            r = (hi - lo) * mult * 0.5; if r <= 0, r = 0.5; end
+            set(hCh2Min,'Min',lo-r,'Max',lo+r); set(hCh2Max,'Min',hi-r,'Max',hi+r);
+        end
+        set(hCh1MinRange,'Callback',@(s,e)updateCh1Range()); set(hCh1MaxRange,'Callback',@(s,e)updateCh1Range());
+        set(hCh2MinRange,'Callback',@(s,e)updateCh2Range()); set(hCh2MaxRange,'Callback',@(s,e)updateCh2Range());
+        function applyMergeImage(~,~)
+            ud = get(hCtrlPanel,'UserData');
+            if ~isempty(ud.displayHandles)
+                modeOpts = get(ud.displayHandles.modeDropdown,'String');
+                curMode = modeOpts{get(ud.displayHandles.modeDropdown,'Value')};
+                if ~strcmp(curMode, 'Image'), return; end
+            end
+            m1 = get(hCh1Min,'Value'); M1 = get(hCh1Max,'Value'); span1 = M1 - m1 + eps;
+            m2 = get(hCh2Min,'Value'); M2 = get(hCh2Max,'Value'); span2 = M2 - m2 + eps;
+            s1 = min(1, max(0, (ud.ch1 - m1) / span1));
+            s2 = min(1, max(0, (ud.ch2 - m2) / span2));
+            idx = get(hColorAssign,'Value');
+            rgb = zeros(size(ud.ch1,1), size(ud.ch1,2), 3);
+            switch idx
+                case 1, rgb(:,:,1)=s1; rgb(:,:,2)=s2; rgb(:,:,3)=0;
+                case 2, rgb(:,:,1)=s2; rgb(:,:,2)=s1; rgb(:,:,3)=0;
+                case 3, rgb(:,:,1)=s1; rgb(:,:,2)=0; rgb(:,:,3)=s2;
+                case 4, rgb(:,:,1)=s2; rgb(:,:,2)=0; rgb(:,:,3)=s1;
+                case 5, rgb(:,:,1)=0; rgb(:,:,2)=s1; rgb(:,:,3)=s2;
+                case 6, rgb(:,:,1)=0; rgb(:,:,2)=s2; rgb(:,:,3)=s1;
+                otherwise, rgb(:,:,1)=s1; rgb(:,:,2)=s2; rgb(:,:,3)=0;
+            end
+            himg = findobj(ud.hAxes, 'Type', 'image');
+            if ~isempty(himg), set(himg(1), 'CData', rgb); end
+        end
+        addlistener(hCh1Min, 'Value', 'PostSet', @(s,e)applyMergeImage());
+        addlistener(hCh1Max, 'Value', 'PostSet', @(s,e)applyMergeImage());
+        addlistener(hCh2Min, 'Value', 'PostSet', @(s,e)applyMergeImage());
+        addlistener(hCh2Max, 'Value', 'PostSet', @(s,e)applyMergeImage());
+        set(hColorAssign, 'Callback', @(s,e)applyMergeImage());
+        updateCh1Range(); updateCh2Range();
+        handles.panel = hCtrlPanel;
+        handles.applyMergeImage = @applyMergeImage;
+        handles.resetSliders = @(modeName) applyMergeImage();
+        handles.reapplyColormap = @() [];
+        handles.setPlayerState = @(pState) [];
     end
     
     % Helper function: Multi-line editor for text fields
