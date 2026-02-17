@@ -125,6 +125,9 @@ hPlaneLabel = uicontrol('Parent', hProcessingPanel, 'Style', 'text', 'String', '
 hPlaneDropdown = uicontrol('Parent', hProcessingPanel, 'Style', 'popupmenu', 'String', {'-'}, 'Position', [70 150 50 20]);
 hChannelLabel = uicontrol('Parent', hProcessingPanel, 'Style', 'text', 'String', 'Channel:', 'Position', [130 150 60 20], 'HorizontalAlignment', 'right', 'BackgroundColor', [0.94 0.94 0.94]);
 hChannelDropdown = uicontrol('Parent', hProcessingPanel, 'Style', 'popupmenu', 'String', {'-'}, 'Position', [200 150 50 20]);
+hZStackCheckbox = uicontrol('Parent', hProcessingPanel, 'Style', 'checkbox', 'String', 'Z-stack', 'Position', [258 150 55 20], 'Value', 0, 'BackgroundColor', [0.94 0.94 0.94], 'Visible', 'off');
+hZStackRangeLabel = uicontrol('Parent', hProcessingPanel, 'Style', 'text', 'String', 'Range:', 'Position', [315 150 35 20], 'HorizontalAlignment', 'right', 'BackgroundColor', [0.94 0.94 0.94], 'Visible', 'off');
+hZStackRangeEdit = uicontrol('Parent', hProcessingPanel, 'Style', 'edit', 'String', '1:3', 'Position', [352 150 38 20], 'Visible', 'off');
 hNeuropilCoeffLabel = uicontrol('Parent', hProcessingPanel, 'Style', 'text', 'String', 'Neuropil (c):', 'Position', [10 150 80 20], 'HorizontalAlignment', 'right', 'BackgroundColor', [0.94 0.94 0.94], 'Visible', 'off');
 hNeuropilCoeffInput = uicontrol('Parent', hProcessingPanel, 'Style', 'edit', 'String', '0.7', 'Position', [100 150 50 20], 'Visible', 'off');
 uicontrol('Parent', hProcessingPanel, 'Style', 'text', 'String', 'Rolling Avg (t):', 'Position', [280 150 80 20], 'HorizontalAlignment', 'right', 'BackgroundColor', [0.94 0.94 0.94]);
@@ -194,6 +197,9 @@ updateDisplayMode();
         set(hPlaneDropdown, 'Visible', ifelse(isTiffMode, 'on', 'off'));
         set(hChannelLabel, 'Visible', ifelse(isTiffMode, 'on', 'off'));
         set(hChannelDropdown, 'Visible', ifelse(isTiffMode, 'on', 'off'));
+        set(hZStackCheckbox, 'Visible', ifelse(isTiffMode, 'on', 'off'));
+        set(hZStackRangeLabel, 'Visible', ifelse(isTiffMode, 'on', 'off'));
+        set(hZStackRangeEdit, 'Visible', ifelse(isTiffMode, 'on', 'off'));
         set(hSmoothingLabel, 'Visible', ifelse(isTiffMode, 'on', 'off'));
         set(hSmoothingWindowInput, 'Visible', ifelse(isTiffMode, 'on', 'off'));
         
@@ -477,7 +483,8 @@ updateDisplayMode();
                 if isnan(rollingAvg) || rollingAvg < 1, set(hText, 'String', 'Invalid Rolling Average.'); return; end
                 appendToStatus(sprintf('Applying rolling average of %d (Loaded State)...', rollingAvg));
                 if strcmp(generationState.mode, 'TIFF')
-                    precomputedMovie = movmean(processedData, rollingAvg, 3, 'Endpoints', 'shrink');
+                    timeDim = ifelse(ndims(processedData) == 4, 4, 3);
+                    precomputedMovie = movmean(processedData, rollingAvg, timeDim, 'Endpoints', 'shrink');
                 else
                     precomputedMovie = movmean(processedData, rollingAvg, 2, 'Endpoints', 'shrink');
                 end
@@ -498,7 +505,8 @@ updateDisplayMode();
             appendToStatus(sprintf('Applying rolling average of %d...', rollingAvg));
             
             if strcmp(generationState.mode, 'TIFF')
-                precomputedMovie = movmean(processedData, rollingAvg, 3, 'Endpoints', 'shrink');
+                timeDim = ifelse(ndims(processedData) == 4, 4, 3);
+                precomputedMovie = movmean(processedData, rollingAvg, timeDim, 'Endpoints', 'shrink');
             else % Neural
                 precomputedMovie = movmean(processedData, rollingAvg, 2, 'Endpoints', 'shrink');
             end
@@ -899,8 +907,18 @@ updateDisplayMode();
             sigma_microns = str2double(get(hSmoothingWindowInput, 'String'));
             if ~isnan(sigma_microns) && sigma_microns > 0
                 appendToStatus(sprintf('Applying spatial smoothing (%.1f um)...', sigma_microns));
-                for i = 1:size(processedData, 3)
-                    processedData(:,:,i) = applySpatialSmoothing_TIFF(processedData(:,:,i), sigma_microns);
+                td = ndims(processedData);
+                nT = size(processedData, td);
+                if td == 4
+                    for i = 1:nT
+                        for c = 1:3
+                            processedData(:,:,c,i) = applySpatialSmoothing_TIFF(processedData(:,:,c,i), sigma_microns);
+                        end
+                    end
+                else
+                    for i = 1:nT
+                        processedData(:,:,i) = applySpatialSmoothing_TIFF(processedData(:,:,i), sigma_microns);
+                    end
                 end
             end
         end
@@ -928,7 +946,8 @@ updateDisplayMode();
         traceYLimAuto = 1; % 1=auto scale; 0=fixed (persisted in playerState)
         traceYLim = [];    % [ymin ymax] when fixed
         
-        isImageData = (ndims(precomputedMovie) == 3);
+        isImageData = (ndims(precomputedMovie) == 3) || (ndims(precomputedMovie) == 4 && size(precomputedMovie, 3) == 3);
+        isRgbMovie = (ndims(precomputedMovie) == 4 && size(precomputedMovie, 3) == 3);
         frameRate = generationState.frameRate;
         
         % Check for existing annotation text in the loaded state
@@ -937,7 +956,7 @@ updateDisplayMode();
         end
         
         try
-            numMovieFrames = size(precomputedMovie, ifelse(isImageData, 3, 2));
+            numMovieFrames = size(precomputedMovie, ifelse(isRgbMovie, 4, ifelse(isImageData, 3, 2)));
             
             hMovieFig = figure('Name', 'Unified Activity Movie Player', 'NumberTitle', 'off', ...
                 'Position', [600 100 600, 900], 'Resize', 'on', 'CloseRequestFcn', @stopMovie);
@@ -1080,7 +1099,9 @@ updateDisplayMode();
             modeOptions = get(displayHandles.modeDropdown, 'String');
             selectedMode = modeOptions{get(displayHandles.modeDropdown, 'Value')};
             
-            if isImageData
+            if isRgbMovie
+                currentFrameData = precomputedMovie(:,:,:,idx);
+            elseif isImageData
                 currentFrameData = precomputedMovie(:,:,idx);
             else
                 currentFrameData = precomputedMovie(:,idx);
@@ -1089,24 +1110,30 @@ updateDisplayMode();
             if strcmp(selectedMode, 'Areas')
                 if isempty(vareaHandles), return; end
                 isFlipped = get(vareaHandles.flipYCheckbox, 'Value');
-                [areaImg, ~] = createAreaAverageImage(currentFrameData, generationState, isFlipped);
+                if isRgbMovie, areaInput = mean(currentFrameData, 3); else, areaInput = currentFrameData; end
+                [areaImg, ~] = createAreaAverageImage(areaInput, generationState, isFlipped);
                 set(hPlotObject, 'CData', areaImg);
-            elseif isImageData % TIFF Image/Grid
+            elseif isImageData || isRgbMovie % TIFF Image/Grid (or RGB merge)
                 T = generationState.TIFF;
                 physW = T.pixelWidth / T.x_pixels_per_unit;
                 physH = T.pixelHeight / T.y_pixels_per_unit;
                 if strcmp(selectedMode, 'Image')
-                    set(hPlotObject, 'CData', currentFrameData, 'XData', [0 physW], 'YData', [0 physH]);
+                    cdata = currentFrameData;
+                    if isRgbMovie && isfloat(cdata) && max(cdata(:)) <= 1
+                        cdata = cdata;
+                    elseif isRgbMovie && isfloat(cdata)
+                        cdata = min(1, max(0, cdata));
+                    end
+                    set(hPlotObject, 'CData', cdata, 'XData', [0 physW], 'YData', [0 physH]);
                 else % Grid (downsampled image)
                     gridSize = str2double(get(displayHandles.gridSizeEdit, 'String'));
                     if isnan(gridSize) || gridSize < 1, gridSize = 30; end
-                    
+                    if isRgbMovie, grayFrame = mean(currentFrameData, 3); else, grayFrame = currentFrameData; end
                     if get(displayHandles.interpolateCheckbox, 'Value') == 1
-                        frameData = imresize(currentFrameData, [gridSize gridSize], 'bicubic');
+                        frameData = imresize(grayFrame, [gridSize gridSize], 'bicubic');
                     else
-                        [frameData, ~, ~] = binData_TIFF(currentFrameData, generationState.TIFF, gridSize);
+                        [frameData, ~, ~] = binData_TIFF(grayFrame, generationState.TIFF, gridSize);
                     end
-                    
                     grid_x = linspace(0, physW, gridSize);
                     grid_y = linspace(0, physH, gridSize);
                     set(hPlotObject, 'CData', frameData, 'XData', grid_x, 'YData', grid_y);
@@ -1180,7 +1207,9 @@ updateDisplayMode();
                  selectedMode = modeOverride;
              end
              
-             if isImageData
+             if isRgbMovie
+                 frameData = precomputedMovie(:,:,:,idx);
+             elseif isImageData
                  frameData = precomputedMovie(:,:,idx);
              else
                  frameData = precomputedMovie(:,idx);
@@ -1189,14 +1218,19 @@ updateDisplayMode();
              if strcmp(selectedMode, 'Grid')
                  gridSize = str2double(get(displayHandles.gridSizeEdit, 'String'));
                  if isnan(gridSize) || gridSize < 1, gridSize = 30; end
-                 if isImageData
-                     data = binData_TIFF(frameData, generationState.TIFF, gridSize);
+                 if isImageData || isRgbMovie
+                     if ndims(frameData) == 3, grayForBin = mean(frameData, 3); else, grayForBin = frameData; end
+                     data = binData_TIFF(grayForBin, generationState.TIFF, gridSize);
                  else
                      [data, ~, ~] = binData_Neural(generationState.Neural, frameData, gridSize, generationState.physicalCoords, get(displayHandles.interpolateCheckbox, 'Value'));
                  end
              elseif strcmp(selectedMode, 'Areas')
                  isFlipped = get(vareaHandles.flipYCheckbox, 'Value');
-                 [data, ~] = createAreaAverageImage(frameData, generationState, isFlipped);
+                 if ndims(frameData) == 3
+                     [data, ~] = createAreaAverageImage(mean(frameData, 3), generationState, isFlipped);
+                 else
+                     [data, ~] = createAreaAverageImage(frameData, generationState, isFlipped);
+                 end
              else
                  data = frameData;
              end
@@ -1505,7 +1539,7 @@ updateDisplayMode();
                             fr = getframe(hOffAx);
                             frameRGB = fr.cdata;
                         else
-                            % Image mode: crop to current zoom/pan, then build frame from CData + colormap
+                            % Image mode: crop to current zoom/pan, then build frame (grayscale + colormap or RGB)
                             set(hTextTime,'String', tStr); set(hTextSpeed,'String', spStr);
                             nR = size(frameData,1); nC = size(frameData,2);
                             dx = dataXExtent(2)-dataXExtent(1); dy = dataYExtent(2)-dataYExtent(1);
@@ -1514,20 +1548,30 @@ updateDisplayMode();
                             r1 = 1 + (nR-1)*(axYLim(1)-dataYExtent(1))/dy; r2 = 1 + (nR-1)*(axYLim(2)-dataYExtent(1))/dy;
                             c1 = max(1,min(nC,round(c1))); c2 = max(1,min(nC,round(c2))); r1 = max(1,min(nR,round(r1))); r2 = max(1,min(nR,round(r2)));
                             if c1>c2, [c1,c2]=deal(c2,c1); end; if r1>r2, [r1,r2]=deal(r2,r1); end
-                            frameDataCropped = frameData(r1:r2, c1:c2);
-                            % Match video convention: row 1 = top of frame. MATLAB YDir 'normal' draws row 1 at bottom.
-                            if strcmp(axYDir,'normal'), frameDataCropped = flipud(frameDataCropped); end
-                            if strcmp(axXDir,'reverse'), frameDataCropped = fliplr(frameDataCropped); end
-                            n = size(exportCMap, 1);
-                            climSpan = exportCLim(2) - exportCLim(1);
-                            if climSpan <= 0, climSpan = 1; end
-                            norm = (double(frameDataCropped) - exportCLim(1)) / climSpan;
-                            norm = min(1, max(0, norm));
-                            idx = round(norm * (n - 1)) + 1;
-                            idx = min(n, max(1, idx));
-                            frameRGB = ind2rgb(idx, exportCMap);
-                            frameRGB = uint8(round(frameRGB * 255));
-                            frameRGB = imresize(frameRGB, [targetH targetW]);
+                            isRgbFrame = (ndims(frameData) == 3 && size(frameData,3) == 3);
+                            if isRgbFrame
+                                frameDataCropped = frameData(r1:r2, c1:c2, :);
+                                if strcmp(axYDir,'normal'), frameDataCropped = flipud(frameDataCropped); end
+                                if strcmp(axXDir,'reverse'), frameDataCropped = fliplr(frameDataCropped); end
+                                f = double(frameDataCropped);
+                                f = min(1, max(0, f));
+                                frameRGB = uint8(round(f * 255));
+                                frameRGB = imresize(frameRGB, [targetH targetW]);
+                            else
+                                frameDataCropped = frameData(r1:r2, c1:c2);
+                                if strcmp(axYDir,'normal'), frameDataCropped = flipud(frameDataCropped); end
+                                if strcmp(axXDir,'reverse'), frameDataCropped = fliplr(frameDataCropped); end
+                                n = size(exportCMap, 1);
+                                climSpan = exportCLim(2) - exportCLim(1);
+                                if climSpan <= 0, climSpan = 1; end
+                                norm = (double(frameDataCropped) - exportCLim(1)) / climSpan;
+                                norm = min(1, max(0, norm));
+                                idx = round(norm * (n - 1)) + 1;
+                                idx = min(n, max(1, idx));
+                                frameRGB = ind2rgb(idx, exportCMap);
+                                frameRGB = uint8(round(frameRGB * 255));
+                                frameRGB = imresize(frameRGB, [targetH targetW]);
+                            end
                             % Overlay time and speed (insertText if available, else getframe from axes). R2016b+ compatible.
                             overlaysAdded = false;
                             if exist('insertText','file')
@@ -1584,7 +1628,7 @@ updateDisplayMode();
 
         % --- Traces UI & Logic ---
         function openTracesWindow(~,~)
-            if ndims(precomputedMovie) == 3
+            if ndims(precomputedMovie) ~= 2
                 warndlg('Traces are available only for Neural movies (cell data).', 'Traces');
                 return;
             end
@@ -1976,6 +2020,8 @@ updateDisplayMode();
                 Ssnap = appState.sessionUiCache.(appState.currentMode);
                 if strcmp(appState.currentMode,'TIFF')
                     set(hPlaneDropdown,'Value',Ssnap.plane); set(hChannelDropdown,'Value',Ssnap.channel); set(hSmoothingWindowInput,'String',Ssnap.smoothingSigma);
+                    if isfield(Ssnap,'zStack'), set(hZStackCheckbox,'Value',Ssnap.zStack); end
+                    if isfield(Ssnap,'zStackRange'), set(hZStackRangeEdit,'String',Ssnap.zStackRange); end
                 else
                     set(hNeuropilCoeffInput,'String',Ssnap.neuropilCoeff);
                 end
@@ -2046,6 +2092,8 @@ updateDisplayMode();
         if strcmp(state.mode, 'TIFF')
             ui.plane = get(hPlaneDropdown, 'Value');
             ui.channel = get(hChannelDropdown, 'Value');
+            ui.zStack = get(hZStackCheckbox, 'Value');
+            ui.zStackRange = get(hZStackRangeEdit, 'String');
             ui.smoothingSigma = get(hSmoothingWindowInput, 'String');
             ui.maxFrames = get(hMaxFramesInput, 'String');
         else
@@ -2081,6 +2129,8 @@ updateDisplayMode();
         if strcmp(mode, 'TIFF')
             S.plane = get(hPlaneDropdown, 'Value');
             S.channel = get(hChannelDropdown, 'Value');
+            S.zStack = get(hZStackCheckbox, 'Value');
+            S.zStackRange = get(hZStackRangeEdit, 'String');
             S.smoothingSigma = get(hSmoothingWindowInput, 'String');
             appState.uiStateCache.TIFF = S;
         else
@@ -2104,6 +2154,8 @@ updateDisplayMode();
         if strcmp(mode, 'TIFF')
             S.plane = get(hPlaneDropdown, 'Value');
             S.channel = get(hChannelDropdown, 'Value');
+            S.zStack = get(hZStackCheckbox, 'Value');
+            S.zStackRange = get(hZStackRangeEdit, 'String');
             S.smoothingSigma = get(hSmoothingWindowInput, 'String');
             S.maxFrames = get(hMaxFramesInput, 'String');
         else
@@ -2143,6 +2195,8 @@ updateDisplayMode();
                 set(hPlaneDropdown, 'Value', S.plane);
                 set(hChannelDropdown, 'Value', S.channel);
                 set(hSmoothingWindowInput, 'String', S.smoothingSigma);
+                if isfield(S,'zStack'), set(hZStackCheckbox, 'Value', S.zStack); end
+                if isfield(S,'zStackRange'), set(hZStackRangeEdit, 'String', S.zStackRange); end
                 if isfield(S,'maxFrames'), set(hMaxFramesInput,'String', S.maxFrames); end
             else
                 set(hNeuropilCoeffInput, 'String', S.neuropilCoeff);
@@ -2159,6 +2213,8 @@ updateDisplayMode();
             set(hPlaneDropdown, 'Value', state.ui.plane);
             set(hChannelDropdown, 'Value', state.ui.channel);
             set(hSmoothingWindowInput, 'String', state.ui.smoothingSigma);
+            if isfield(state.ui,'zStack'), set(hZStackCheckbox, 'Value', state.ui.zStack); end
+            if isfield(state.ui,'zStackRange'), set(hZStackRangeEdit, 'String', state.ui.zStackRange); end
             if isfield(state.ui,'maxFrames'), set(hMaxFramesInput,'String', state.ui.maxFrames); end
         else % Neural
             set(hNeuropilCoeffInput, 'String', state.ui.neuropilCoeff);
@@ -2332,7 +2388,11 @@ updateDisplayMode();
         T.parsedNumPlanes = str2double(numPlanes);
         T.parsedNumChannels = str2double(numChannels);
         set(hPlaneDropdown, 'String', 1:T.parsedNumPlanes, 'Value', 1);
-        set(hChannelDropdown, 'String', 1:T.parsedNumChannels, 'Value', 1);
+        chanStrs = arrayfun(@num2str, 1:T.parsedNumChannels, 'UniformOutput', false);
+        if T.parsedNumChannels >= 2
+            chanStrs{end+1} = 'Merge (R+G)';
+        end
+        set(hChannelDropdown, 'String', chanStrs, 'Value', 1);
         
         header_text = ifelse(T.isFolderMode, ' Folder: ', ' File: ');
         
@@ -2360,23 +2420,52 @@ updateDisplayMode();
         avgMovie = []; success = false; errMsg = '';
         T = appState.TIFF;
         planeNum = get(hPlaneDropdown, 'Value');
-        channelNum = get(hChannelDropdown, 'Value');
+        channelVal = get(hChannelDropdown, 'Value');
+        isMerge = (T.parsedNumChannels >= 2 && channelVal == T.parsedNumChannels + 1);
+        channelNum = ifelse(isMerge, 1, channelVal);
+        zStackOn = get(hZStackCheckbox, 'Value');
+        zStackRangeStr = strtrim(get(hZStackRangeEdit, 'String'));
+        if zStackOn && ~isempty(zStackRangeStr)
+            try
+                % e.g. "1:3" -> [1 2 3]; "1 2 5" or "[1 2 5]" also supported
+                planeList = eval(zStackRangeStr);
+                if isempty(planeList), planeList = planeNum; end
+            catch
+                planeList = planeNum;
+            end
+            planeList = round(planeList(:)'); planeList = planeList(planeList >= 1 & planeList <= T.parsedNumPlanes);
+            if isempty(planeList), planeList = planeNum; end
+        else
+            planeList = planeNum;
+        end
         
         try
             if T.isFolderMode
                 evaluatedTrials = evalin('base', trialSelectionStr);
                 selectedTrials = ifelse(islogical(evaluatedTrials), find(evaluatedTrials), evaluatedTrials);
                 
-                trialFilePaths = {}; trialLengths = []; framesPerTrial = {}; infoFirstPerTrial = {};
+                trialFilePaths = {}; trialLengths = []; infoFirstPerTrial = {};
+                framesPerTrialCh1 = {}; framesPerTrialCh2 = {};
+                framesPerTrialPerPlane = {};
                 for trialNum = selectedTrials(:)'
                     trialFileName = sprintf('%s_%05d.tif', T.fileBaseName, trialNum);
                     trialFilePath = fullfile(T.selectedFolderPath, trialFileName);
                     if exist(trialFilePath, 'file')
                         trialFilePaths{end+1} = trialFilePath;
                         info = imfinfo(trialFilePath);
-                        trialFrames = getFramesForPlaneChannel_TIFF(planeNum, channelNum, numel(info));
-                        trialLengths(end+1) = numel(trialFrames);
-                        framesPerTrial{end+1} = trialFrames;
+                        nF = numel(info);
+                        if isMerge
+                            framesPerTrialCh1{end+1} = getFramesForPlaneChannel_TIFF(planeList(1), 1, nF);
+                            framesPerTrialCh2{end+1} = getFramesForPlaneChannel_TIFF(planeList(1), 2, nF);
+                            trialLengths(end+1) = min(numel(framesPerTrialCh1{end}), numel(framesPerTrialCh2{end}));
+                        else
+                            fp = cell(1, numel(planeList));
+                            for p = 1:numel(planeList)
+                                fp{p} = getFramesForPlaneChannel_TIFF(planeList(p), channelNum, nF);
+                            end
+                            framesPerTrialPerPlane{end+1} = fp;
+                            trialLengths(end+1) = min(cellfun(@numel, fp));
+                        end
                         infoFirstPerTrial{end+1} = info(1);
                     end
                 end
@@ -2384,39 +2473,99 @@ updateDisplayMode();
                 
                 appendToStatus(sprintf('Found %d trials. Averaging frames...', numel(trialFilePaths)));
                 minTrialLength = min(trialLengths);
-                
-                % Apply user cap on frames if provided
                 maxFramesStr = get(hMaxFramesInput,'String');
                 maxFramesVal = str2double(maxFramesStr);
                 if ~isnan(maxFramesVal) && maxFramesVal > 0
                     minTrialLength = min(minTrialLength, round(maxFramesVal));
                 end
                 
-                % Use the first frame from the selected plane/channel for sizing
-                firstFrame = stitchFrame_TIFF(imread(trialFilePaths{1}, framesPerTrial{1}(1)), infoFirstPerTrial{1}, T.roiData);
-                avgMovie = zeros(size(firstFrame,1), size(firstFrame,2), minTrialLength, 'double');
-                
-                for i = 1:minTrialLength
-                    sumFrame = zeros(size(firstFrame), 'double');
-                    for k = 1:numel(trialFilePaths)
-                        framesInFile = framesPerTrial{k};
-                        sumFrame = sumFrame + double(stitchFrame_TIFF(imread(trialFilePaths{k}, framesInFile(i)), infoFirstPerTrial{k}, T.roiData));
+                firstFrame = stitchFrame_TIFF(imread(trialFilePaths{1}, 1), infoFirstPerTrial{1}, T.roiData);
+                [H, W] = size(firstFrame);
+                if isMerge
+                    avgMovie = zeros(H, W, 3, minTrialLength, 'double');
+                    for i = 1:minTrialLength
+                        sumR = zeros(H, W, 'double'); sumG = zeros(H, W, 'double');
+                        for k = 1:numel(trialFilePaths)
+                            f1 = double(stitchFrame_TIFF(imread(trialFilePaths{k}, framesPerTrialCh1{k}(i)), infoFirstPerTrial{k}, T.roiData));
+                            f2 = double(stitchFrame_TIFF(imread(trialFilePaths{k}, framesPerTrialCh2{k}(i)), infoFirstPerTrial{k}, T.roiData));
+                            if numel(planeList) > 1
+                                for p = 2:numel(planeList)
+                                    fp1 = getFramesForPlaneChannel_TIFF(planeList(p), 1, numel(imfinfo(trialFilePaths{k})));
+                                    fp2 = getFramesForPlaneChannel_TIFF(planeList(p), 2, numel(imfinfo(trialFilePaths{k})));
+                                    f1 = f1 + double(stitchFrame_TIFF(imread(trialFilePaths{k}, fp1(i)), infoFirstPerTrial{k}, T.roiData));
+                                    f2 = f2 + double(stitchFrame_TIFF(imread(trialFilePaths{k}, fp2(i)), infoFirstPerTrial{k}, T.roiData));
+                                end
+                            end
+                            sumR = sumR + f1; sumG = sumG + f2;
+                        end
+                        sumR = sumR / numel(trialFilePaths); sumG = sumG / numel(trialFilePaths);
+                        pr = prctile(sumR(:), [1 99]); pg = prctile(sumG(:), [1 99]);
+                        r = (sumR - pr(1)) / (diff(pr) + eps); g = (sumG - pg(1)) / (diff(pg) + eps);
+                        avgMovie(:,:,1,i) = min(1, max(0, r));
+                        avgMovie(:,:,2,i) = min(1, max(0, g));
+                        avgMovie(:,:,3,i) = 0;
                     end
-                    avgMovie(:,:,i) = sumFrame / numel(trialFilePaths);
+                else
+                    avgMovie = zeros(H, W, minTrialLength, 'double');
+                    for i = 1:minTrialLength
+                        sumFrame = zeros(H, W, 'double');
+                        for k = 1:numel(trialFilePaths)
+                            fp = framesPerTrialPerPlane{k};
+                            for p = 1:numel(planeList)
+                                sumFrame = sumFrame + double(stitchFrame_TIFF(imread(trialFilePaths{k}, fp{p}(i)), infoFirstPerTrial{k}, T.roiData));
+                            end
+                        end
+                        avgMovie(:,:,i) = sumFrame / (numel(trialFilePaths) * numel(planeList));
+                    end
                 end
             else
                 info = imfinfo(T.fullFilePath);
-                allFrames = getFramesForPlaneChannel_TIFF(planeNum, channelNum, numel(info));
-                % Apply user cap on frames if provided
+                nF = numel(info);
+                if isMerge
+                    allF1 = getFramesForPlaneChannel_TIFF(planeList(1), 1, nF);
+                    allF2 = getFramesForPlaneChannel_TIFF(planeList(1), 2, nF);
+                    nT = min(numel(allF1), numel(allF2));
+                else
+                    allFrames = getFramesForPlaneChannel_TIFF(planeList(1), channelNum, nF);
+                    nT = numel(allFrames);
+                end
                 maxFramesStr = get(hMaxFramesInput,'String');
                 maxFramesVal = str2double(maxFramesStr);
                 if ~isnan(maxFramesVal) && maxFramesVal > 0
-                    allFrames = allFrames(1:min(numel(allFrames), round(maxFramesVal)));
+                    nT = min(nT, round(maxFramesVal));
                 end
-                firstFrame = stitchFrame_TIFF(imread(T.fullFilePath,1), info(1), T.roiData);
-                avgMovie = zeros(size(firstFrame,1), size(firstFrame,2), numel(allFrames), 'double');
-                for i = 1:numel(allFrames)
-                    avgMovie(:,:,i) = double(stitchFrame_TIFF(imread(T.fullFilePath, allFrames(i)), info(1), T.roiData));
+                firstFrame = stitchFrame_TIFF(imread(T.fullFilePath, 1), info(1), T.roiData);
+                [H, W] = size(firstFrame);
+                if isMerge
+                    avgMovie = zeros(H, W, 3, nT, 'double');
+                    for i = 1:nT
+                        f1 = double(stitchFrame_TIFF(imread(T.fullFilePath, allF1(i)), info(1), T.roiData));
+                        f2 = double(stitchFrame_TIFF(imread(T.fullFilePath, allF2(i)), info(1), T.roiData));
+                        for p = 2:numel(planeList)
+                            fp1 = getFramesForPlaneChannel_TIFF(planeList(p), 1, nF);
+                            fp2 = getFramesForPlaneChannel_TIFF(planeList(p), 2, nF);
+                            f1 = f1 + double(stitchFrame_TIFF(imread(T.fullFilePath, fp1(i)), info(1), T.roiData));
+                            f2 = f2 + double(stitchFrame_TIFF(imread(T.fullFilePath, fp2(i)), info(1), T.roiData));
+                        end
+                        pr = prctile(f1(:), [1 99]); pg = prctile(f2(:), [1 99]);
+                        avgMovie(:,:,1,i) = min(1, max(0, (f1 - pr(1)) / (diff(pr) + eps)));
+                        avgMovie(:,:,2,i) = min(1, max(0, (f2 - pg(1)) / (diff(pg) + eps)));
+                        avgMovie(:,:,3,i) = 0;
+                    end
+                else
+                    allFrames = getFramesForPlaneChannel_TIFF(planeList(1), channelNum, nF);
+                    if ~isnan(maxFramesVal) && maxFramesVal > 0
+                        allFrames = allFrames(1:min(numel(allFrames), round(maxFramesVal)));
+                    end
+                    avgMovie = zeros(H, W, numel(allFrames), 'double');
+                    for i = 1:numel(allFrames)
+                        sumFrame = zeros(H, W, 'double');
+                        for p = 1:numel(planeList)
+                            fp = getFramesForPlaneChannel_TIFF(planeList(p), channelNum, nF);
+                            sumFrame = sumFrame + double(stitchFrame_TIFF(imread(T.fullFilePath, fp(i)), info(1), T.roiData));
+                        end
+                        avgMovie(:,:,i) = sumFrame / numel(planeList);
+                    end
                 end
             end
             success = true;
