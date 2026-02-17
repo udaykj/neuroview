@@ -125,9 +125,6 @@ hPlaneLabel = uicontrol('Parent', hProcessingPanel, 'Style', 'text', 'String', '
 hPlaneDropdown = uicontrol('Parent', hProcessingPanel, 'Style', 'popupmenu', 'String', {'-'}, 'Position', [70 150 50 20]);
 hChannelLabel = uicontrol('Parent', hProcessingPanel, 'Style', 'text', 'String', 'Channel:', 'Position', [130 150 60 20], 'HorizontalAlignment', 'right', 'BackgroundColor', [0.94 0.94 0.94]);
 hChannelDropdown = uicontrol('Parent', hProcessingPanel, 'Style', 'popupmenu', 'String', {'-'}, 'Position', [200 150 50 20]);
-hZStackCheckbox = uicontrol('Parent', hProcessingPanel, 'Style', 'checkbox', 'String', 'Z-stack', 'Position', [258 150 55 20], 'Value', 0, 'BackgroundColor', [0.94 0.94 0.94], 'Visible', 'off');
-hZStackRangeLabel = uicontrol('Parent', hProcessingPanel, 'Style', 'text', 'String', 'Range:', 'Position', [315 150 35 20], 'HorizontalAlignment', 'right', 'BackgroundColor', [0.94 0.94 0.94], 'Visible', 'off');
-hZStackRangeEdit = uicontrol('Parent', hProcessingPanel, 'Style', 'edit', 'String', '1:3', 'Position', [352 150 38 20], 'Visible', 'off');
 hNeuropilCoeffLabel = uicontrol('Parent', hProcessingPanel, 'Style', 'text', 'String', 'Neuropil (c):', 'Position', [10 150 80 20], 'HorizontalAlignment', 'right', 'BackgroundColor', [0.94 0.94 0.94], 'Visible', 'off');
 hNeuropilCoeffInput = uicontrol('Parent', hProcessingPanel, 'Style', 'edit', 'String', '0.7', 'Position', [100 150 50 20], 'Visible', 'off');
 uicontrol('Parent', hProcessingPanel, 'Style', 'text', 'String', 'Rolling Avg (t):', 'Position', [280 150 80 20], 'HorizontalAlignment', 'right', 'BackgroundColor', [0.94 0.94 0.94]);
@@ -197,9 +194,6 @@ updateDisplayMode();
         set(hPlaneDropdown, 'Visible', ifelse(isTiffMode, 'on', 'off'));
         set(hChannelLabel, 'Visible', ifelse(isTiffMode, 'on', 'off'));
         set(hChannelDropdown, 'Visible', ifelse(isTiffMode, 'on', 'off'));
-        set(hZStackCheckbox, 'Visible', ifelse(isTiffMode, 'on', 'off'));
-        set(hZStackRangeLabel, 'Visible', ifelse(isTiffMode, 'on', 'off'));
-        set(hZStackRangeEdit, 'Visible', ifelse(isTiffMode, 'on', 'off'));
         set(hSmoothingLabel, 'Visible', ifelse(isTiffMode, 'on', 'off'));
         set(hSmoothingWindowInput, 'Visible', ifelse(isTiffMode, 'on', 'off'));
         
@@ -2020,8 +2014,6 @@ updateDisplayMode();
                 Ssnap = appState.sessionUiCache.(appState.currentMode);
                 if strcmp(appState.currentMode,'TIFF')
                     set(hPlaneDropdown,'Value',Ssnap.plane); set(hChannelDropdown,'Value',Ssnap.channel); set(hSmoothingWindowInput,'String',Ssnap.smoothingSigma);
-                    if isfield(Ssnap,'zStack'), set(hZStackCheckbox,'Value',Ssnap.zStack); end
-                    if isfield(Ssnap,'zStackRange'), set(hZStackRangeEdit,'String',Ssnap.zStackRange); end
                 else
                     set(hNeuropilCoeffInput,'String',Ssnap.neuropilCoeff);
                 end
@@ -2092,8 +2084,6 @@ updateDisplayMode();
         if strcmp(state.mode, 'TIFF')
             ui.plane = get(hPlaneDropdown, 'Value');
             ui.channel = get(hChannelDropdown, 'Value');
-            ui.zStack = get(hZStackCheckbox, 'Value');
-            ui.zStackRange = get(hZStackRangeEdit, 'String');
             ui.smoothingSigma = get(hSmoothingWindowInput, 'String');
             ui.maxFrames = get(hMaxFramesInput, 'String');
         else
@@ -2129,8 +2119,6 @@ updateDisplayMode();
         if strcmp(mode, 'TIFF')
             S.plane = get(hPlaneDropdown, 'Value');
             S.channel = get(hChannelDropdown, 'Value');
-            S.zStack = get(hZStackCheckbox, 'Value');
-            S.zStackRange = get(hZStackRangeEdit, 'String');
             S.smoothingSigma = get(hSmoothingWindowInput, 'String');
             appState.uiStateCache.TIFF = S;
         else
@@ -2154,8 +2142,6 @@ updateDisplayMode();
         if strcmp(mode, 'TIFF')
             S.plane = get(hPlaneDropdown, 'Value');
             S.channel = get(hChannelDropdown, 'Value');
-            S.zStack = get(hZStackCheckbox, 'Value');
-            S.zStackRange = get(hZStackRangeEdit, 'String');
             S.smoothingSigma = get(hSmoothingWindowInput, 'String');
             S.maxFrames = get(hMaxFramesInput, 'String');
         else
@@ -2195,8 +2181,6 @@ updateDisplayMode();
                 set(hPlaneDropdown, 'Value', S.plane);
                 set(hChannelDropdown, 'Value', S.channel);
                 set(hSmoothingWindowInput, 'String', S.smoothingSigma);
-                if isfield(S,'zStack'), set(hZStackCheckbox, 'Value', S.zStack); end
-                if isfield(S,'zStackRange'), set(hZStackRangeEdit, 'String', S.zStackRange); end
                 if isfield(S,'maxFrames'), set(hMaxFramesInput,'String', S.maxFrames); end
             else
                 set(hNeuropilCoeffInput, 'String', S.neuropilCoeff);
@@ -2213,8 +2197,6 @@ updateDisplayMode();
             set(hPlaneDropdown, 'Value', state.ui.plane);
             set(hChannelDropdown, 'Value', state.ui.channel);
             set(hSmoothingWindowInput, 'String', state.ui.smoothingSigma);
-            if isfield(state.ui,'zStack'), set(hZStackCheckbox, 'Value', state.ui.zStack); end
-            if isfield(state.ui,'zStackRange'), set(hZStackRangeEdit, 'String', state.ui.zStackRange); end
             if isfield(state.ui,'maxFrames'), set(hMaxFramesInput,'String', state.ui.maxFrames); end
         else % Neural
             set(hNeuropilCoeffInput, 'String', state.ui.neuropilCoeff);
@@ -2387,10 +2369,14 @@ updateDisplayMode();
         end
         T.parsedNumPlanes = str2double(numPlanes);
         T.parsedNumChannels = str2double(numChannels);
-        set(hPlaneDropdown, 'String', 1:T.parsedNumPlanes, 'Value', 1);
+        planeStrs = arrayfun(@num2str, 1:T.parsedNumPlanes, 'UniformOutput', false);
+        if T.parsedNumPlanes >= 2
+            planeStrs{end+1} = 'All';
+        end
+        set(hPlaneDropdown, 'String', planeStrs, 'Value', 1);
         chanStrs = arrayfun(@num2str, 1:T.parsedNumChannels, 'UniformOutput', false);
         if T.parsedNumChannels >= 2
-            chanStrs{end+1} = 'Merge (R+G)';
+            chanStrs{end+1} = 'All';
         end
         set(hChannelDropdown, 'String', chanStrs, 'Value', 1);
         
@@ -2419,24 +2405,15 @@ updateDisplayMode();
     function [avgMovie, success, errMsg] = computeTrialAverageMovie_TIFF(trialSelectionStr)
         avgMovie = []; success = false; errMsg = '';
         T = appState.TIFF;
-        planeNum = get(hPlaneDropdown, 'Value');
+        planeVal = get(hPlaneDropdown, 'Value');
         channelVal = get(hChannelDropdown, 'Value');
         isMerge = (T.parsedNumChannels >= 2 && channelVal == T.parsedNumChannels + 1);
         channelNum = ifelse(isMerge, 1, channelVal);
-        zStackOn = get(hZStackCheckbox, 'Value');
-        zStackRangeStr = strtrim(get(hZStackRangeEdit, 'String'));
-        if zStackOn && ~isempty(zStackRangeStr)
-            try
-                % e.g. "1:3" -> [1 2 3]; "1 2 5" or "[1 2 5]" also supported
-                planeList = eval(zStackRangeStr);
-                if isempty(planeList), planeList = planeNum; end
-            catch
-                planeList = planeNum;
-            end
-            planeList = round(planeList(:)'); planeList = planeList(planeList >= 1 & planeList <= T.parsedNumPlanes);
-            if isempty(planeList), planeList = planeNum; end
+        % Plane: value 1..N = single plane; value N+1 (when "All" present) = all planes
+        if planeVal <= T.parsedNumPlanes
+            planeList = planeVal;
         else
-            planeList = planeNum;
+            planeList = 1:T.parsedNumPlanes;
         end
         
         try
