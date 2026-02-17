@@ -138,7 +138,8 @@ hSmoothingLabel = uicontrol('Parent', hProcessingPanel, 'Style', 'text', 'String
 hSmoothingWindowInput = uicontrol('Parent', hProcessingPanel, 'Style', 'edit', 'String', '0', 'Position', [370 120 40 20]);
 % Line 3
 uicontrol('Parent', hProcessingPanel, 'Style', 'text', 'String', 'Trials:', 'Position', [20 90 50 20], 'HorizontalAlignment', 'right', 'BackgroundColor', [0.94 0.94 0.94]);
-hTrialInput = uicontrol('Parent', hProcessingPanel, 'Style', 'edit', 'String', ':', 'Position', [80 90 230 20]);
+hTrialInput = uicontrol('Parent', hProcessingPanel, 'Style', 'edit', 'String', ':', 'Position', [80 90 205 20]);
+uicontrol('Parent', hProcessingPanel, 'Style', 'pushbutton', 'String', '+', 'Position', [290 90 20 20], 'FontSize', 8, 'Callback', @(~,~) openMultiLineEditor(hTrialInput, 'Trial Selection'));
 % TIFF: optional frame cap for faster iteration
 hMaxFramesLabel = uicontrol('Parent', hProcessingPanel, 'Style', 'text', 'String', 'Max Frames:', 'Position', [320 90 60 20], 'HorizontalAlignment', 'right', 'BackgroundColor', [0.94 0.94 0.94]);
 hMaxFramesInput = uicontrol('Parent', hProcessingPanel, 'Style', 'edit', 'String', '', 'Position', [385 90 40 20]);
@@ -151,7 +152,8 @@ hDivideByF0Checkbox = uicontrol('Parent', hProcessingPanel, 'Style', 'checkbox',
 hInitialFramesLabel = uicontrol('Parent', hProcessingPanel, 'Style', 'text', 'String', 'Frames:', 'Position', [20 30 50 20], 'HorizontalAlignment', 'right', 'BackgroundColor', [0.94 0.94 0.94], 'Visible', 'off');
 hInitialFramesInput = uicontrol('Parent', hProcessingPanel, 'Style', 'edit', 'String', '10', 'Position', [80 30 40 20], 'Visible', 'off');
 hRefTrialsLabel = uicontrol('Parent', hProcessingPanel, 'Style', 'text', 'String', 'Ref Trials:', 'Position', [5 30 70 20], 'HorizontalAlignment', 'right', 'BackgroundColor', [0.94 0.94 0.94], 'Visible', 'off');
-hRefTrialsInput = uicontrol('Parent', hProcessingPanel, 'Style', 'edit', 'String', '[]', 'Position', [80 30 330 20], 'Visible', 'off');
+hRefTrialsInput = uicontrol('Parent', hProcessingPanel, 'Style', 'edit', 'String', '[]', 'Position', [80 30 305 20], 'Visible', 'off');
+hRefTrialsExpandBtn = uicontrol('Parent', hProcessingPanel, 'Style', 'pushbutton', 'String', '+', 'Position', [390 30 20 20], 'FontSize', 8, 'Callback', @(~,~) openMultiLineEditor(hRefTrialsInput, 'Reference Trials'), 'Visible', 'off');
 hFrameByFrameCheckbox = uicontrol('Parent', hProcessingPanel, 'Style', 'checkbox', 'String', 'Frame-wise Subtraction', 'Position', [80 5 180 20], 'Value', 0, 'BackgroundColor', [0.94 0.94 0.94], 'Visible', 'off');
 
 
@@ -1570,7 +1572,8 @@ updateDisplayMode();
                     hSelPopup = uicontrol('Parent', hTracesFig, 'Style','popupmenu','String',{'All','Lasso','Filter'},'Units','normalized','Position',[0.25 0.21 0.20 0.07], 'Callback', @selectionModeChanged);
                     uicontrol('Parent', hTracesFig, 'Style','pushbutton','String','Lasso...','Units','normalized','Position',[0.47 0.21 0.15 0.07],'Callback', @startLassoSelection);
                     uicontrol('Parent', hTracesFig, 'Style','text','String','Filter expr:','Units','normalized','Position',[0.10 0.12 0.15 0.06],'HorizontalAlignment','left');
-                    hFilterEdit = uicontrol('Parent', hTracesFig, 'Style','edit','String',cellFilterExpr,'Units','normalized','Position',[0.25 0.12 0.37 0.07]);
+                    hFilterEdit = uicontrol('Parent', hTracesFig, 'Style','edit','String',cellFilterExpr,'Units','normalized','Position',[0.25 0.12 0.34 0.07]);
+                    uicontrol('Parent', hTracesFig, 'Style','pushbutton','String','+','Units','normalized','Position',[0.60 0.12 0.03 0.07],'FontSize',8,'Callback', @(~,~) openMultiLineEditor(hFilterEdit, 'Cell Filter Expression'));
                     uicontrol('Parent', hTracesFig, 'Style','pushbutton','String','Apply','Units','normalized','Position',[0.64 0.12 0.10 0.07],'Callback', @(s,e) applyFilterExpr(get(hFilterEdit,'String')));
                     hAvgOnly = uicontrol('Parent', hTracesFig, 'Style','checkbox','String','Average only','Value',traceShowAverageOnly,'Units','normalized','Position',[0.76 0.12 0.18 0.07],'Callback', @(src,evt) setAvgOnly(get(src,'Value')));
                     
@@ -2202,6 +2205,7 @@ updateDisplayMode();
         set(hInitialFramesInput, 'Visible', ifelse(isInitialFrames, 'on', 'off'));
         set(hRefTrialsLabel, 'Visible', ifelse(isRefTrials, 'on', 'off'));
         set(hRefTrialsInput, 'Visible', ifelse(isRefTrials, 'on', 'off'));
+        set(hRefTrialsExpandBtn, 'Visible', ifelse(isRefTrials, 'on', 'off'));
         set(hFrameByFrameCheckbox, 'Visible', ifelse(isRefTrials, 'on', 'off'));
         set(hDivideByF0Checkbox, 'Visible', ifelse(isAnyDf, 'on', 'off'));
     end
@@ -3008,6 +3012,46 @@ updateDisplayMode();
                 panelUD.customModeContrasts.(currentMode) = [minVal, maxVal];
                 set(hCtrlPanel, 'UserData', panelUD);
             end
+        end
+    end
+    
+    % Helper function: Multi-line editor for text fields
+    function openMultiLineEditor(hTextField, fieldLabel)
+        currentStr = get(hTextField, 'String');
+        
+        % Create dialog
+        dlg = dialog('Name', ['Edit ' fieldLabel], 'Position', [300 300 500 400]);
+        
+        % Add instruction text
+        uicontrol('Parent', dlg, 'Style', 'text', ...
+            'String', ['Enter MATLAB expression(s) for ' fieldLabel ':'], ...
+            'Position', [10 370 480 20], 'HorizontalAlignment', 'left');
+        
+        % Add multi-line text area
+        hTextArea = uicontrol('Parent', dlg, 'Style', 'edit', ...
+            'String', currentStr, ...
+            'Position', [10 50 480 310], ...
+            'Max', 2, 'HorizontalAlignment', 'left');  % Max=2 enables multi-line
+        
+        % Add OK button
+        uicontrol('Parent', dlg, 'Style', 'pushbutton', ...
+            'String', 'OK', 'Position', [310 10 80 30], ...
+            'Callback', @(~,~) okCallback());
+        
+        % Add Cancel button
+        uicontrol('Parent', dlg, 'Style', 'pushbutton', ...
+            'String', 'Cancel', 'Position', [400 10 80 30], ...
+            'Callback', @(~,~) delete(dlg));
+        
+        function okCallback()
+            % Get text from text area and update original field
+            newStr = get(hTextArea, 'String');
+            % Convert cell array to single string with newlines if needed
+            if iscell(newStr)
+                newStr = strjoin(newStr, newline);
+            end
+            set(hTextField, 'String', newStr);
+            delete(dlg);
         end
     end
 end
