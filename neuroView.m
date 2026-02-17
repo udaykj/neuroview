@@ -1404,9 +1404,10 @@ updateDisplayMode();
                         if mod(targetH,2)~=0, targetH = targetH+1; end
                     end
 
-                    % Setup offscreen figure/axes
-                    hOffFig = figure('Visible','off','Units','pixels','Position',[100 100 targetW targetH], 'Color','k');
-                    hOffAx = axes('Parent',hOffFig, 'Units','normalized','Position',[0 0 1 1]);
+                    % Setup offscreen figure/axes (stable export: no figure background in capture)
+                    hOffFig = figure('Visible','off','Units','pixels','Position',[100 100 targetW targetH], 'Color','k', ...
+                        'InvertHardcopy','off', 'Renderer','painters');
+                    hOffAx = axes('Parent',hOffFig, 'Units','normalized','Position',[0 0 1 1], 'Color','k');
                     axis(hOffAx,'off');
                     set(hOffAx,'YDir','normal');
                     colormap(hOffAx, colormap(hAxes));
@@ -1496,7 +1497,8 @@ updateDisplayMode();
                         spStr = sprintf('%gx', speedVal);
                         set(hTextTime,'String', tStr); set(hTextSpeed,'String', spStr);
                         drawnow;
-                        fr = getframe(hOffFig);
+                        % Capture axes only to avoid frame-to-frame figure background/rendering flicker
+                        fr = getframe(hOffAx);
                         frameRGB = fr.cdata;
                         % Heuristic gamma compensation to better match on-screen contrast per codec
                         exportGamma = 1.0;
@@ -1507,8 +1509,9 @@ updateDisplayMode();
                         end
                         if abs(exportGamma - 1.0) > 1e-3
                             f = im2double(frameRGB);
-                            f = f .^ exportGamma;
-                            frameRGB = im2uint8(min(max(f,0),1));
+                            f = min(max(f, 0), 1) .^ exportGamma;
+                            % Stable rounding to avoid single-frame intensity flicker
+                            frameRGB = uint8(round(min(max(f * 255, 0), 255)));
                         end
                         writeVideo(v, frameRGB);
                         if ishandle(hWait), waitbar((k - kStart + 1)/nOutFrames, hWait, sprintf('Saving video... %d/%d', (k - kStart + 1), nOutFrames)); end
