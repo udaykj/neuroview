@@ -406,8 +406,8 @@ updateDisplayMode();
                     if pr(1) >= pr(2), pr = [0 1]; end
                     planeContrastLimits_avg(p,:) = pr(:)';
                 end
-                hPlaneFalseColorCheckbox_avg = uicontrol('Parent', hPlotFig, 'Style', 'checkbox', 'String', 'Plane-wise false color', ...
-                    'Value', 0, 'Units', 'normalized', 'Position', [0.1 0.14 0.22 0.02], 'Callback', @(s,e) planeFalseColorToggled_avg(), 'BackgroundColor', get(hPlotFig, 'Color'));
+                hPlaneFalseColorCheckbox_avg = uicontrol('Parent', hPlotFig, 'Style', 'checkbox', 'String', 'Multicolor', ...
+                    'Value', 0, 'Units', 'normalized', 'Position', [0.905 0.165 0.09 0.025], 'Callback', @(s,e) planeFalseColorToggled_avg(), 'BackgroundColor', get(hPlotFig, 'Color'));
             end
             hPlotObject = []; 
             
@@ -567,7 +567,6 @@ updateDisplayMode();
                 addlistener(hMaxs(p), 'Value', 'PostSet', @(s,e) syncPlaneLimitsFromPopup_avg());
                 updatePlaneSliderRanges_avg(idx);
             end
-            set(planeContrastPopupFig_avg, 'UserData', struct('hMins', hMins, 'hMaxs', hMaxs, 'hMinRanges', hMinRanges, 'hMaxRanges', hMaxRanges));
             uicontrol(planeContrastPopupFig_avg, 'Style', 'text', 'String', 'Black', 'Units', 'normalized', 'Position', [0.18 0.96 0.1 0.03]);
             uicontrol(planeContrastPopupFig_avg, 'Style', 'text', 'String', 'White', 'Units', 'normalized', 'Position', [0.55 0.96 0.1 0.03]);
             function updatePlaneSliderRanges_avg(pp)
@@ -588,10 +587,9 @@ updateDisplayMode();
             end
             function syncPlaneLimitsFromPopup_avg()
                 if ~isgraphics(planeContrastPopupFig_avg), return; end
-                ud = get(planeContrastPopupFig_avg, 'UserData');
-                for pp = 1:numel(ud.hMins)
-                    planeContrastLimits_avg(pp,1) = get(ud.hMins(pp), 'Value');
-                    planeContrastLimits_avg(pp,2) = get(ud.hMaxs(pp), 'Value');
+                for pp = 1:numel(hMins)
+                    planeContrastLimits_avg(pp,1) = get(hMins(pp), 'Value');
+                    planeContrastLimits_avg(pp,2) = get(hMaxs(pp), 'Value');
                 end
                 displayModeChanged_static();
             end
@@ -1209,8 +1207,8 @@ updateDisplayMode();
                 modeContrasts.Areas = p_area;
             end
 
-            hPlaneFalseColorCheckbox = uicontrol('Parent', hMovieFig, 'Style', 'checkbox', 'String', 'Plane-wise false color', ...
-                'Value', 0, 'Units', 'normalized', 'Position', [0.1 0.17 0.25 0.02], 'Visible', ifelse(isMultiPlaneMovie, 'on', 'off'), ...
+            hPlaneFalseColorCheckbox = uicontrol('Parent', hMovieFig, 'Style', 'checkbox', 'String', 'Multicolor', ...
+                'Value', 0, 'Units', 'normalized', 'Position', [0.905 0.165 0.09 0.025], 'Visible', ifelse(isMultiPlaneMovie, 'on', 'off'), ...
                 'Callback', @(s,e) planeFalseColorToggled(), 'BackgroundColor', get(hMovieFig, 'Color'));
             planeContrastPopupFig = [];
             planeContrastLimits = [];
@@ -1524,7 +1522,6 @@ updateDisplayMode();
                 addlistener(hMaxs(p), 'Value', 'PostSet', @(s,e) syncPlaneLimitsFromPopup());
                 updatePlaneSliderRanges(idx);
             end
-            set(planeContrastPopupFig, 'UserData', struct('hMins', hMins, 'hMaxs', hMaxs, 'hMinRanges', hMinRanges, 'hMaxRanges', hMaxRanges));
             uicontrol(planeContrastPopupFig, 'Style', 'text', 'String', 'Black', 'Units', 'normalized', 'Position', [0.18 0.96 0.1 0.03]);
             uicontrol(planeContrastPopupFig, 'Style', 'text', 'String', 'White', 'Units', 'normalized', 'Position', [0.55 0.96 0.1 0.03]);
             function updatePlaneSliderRanges(pp)
@@ -1546,10 +1543,9 @@ updateDisplayMode();
 
             function syncPlaneLimitsFromPopup()
                 if ~isgraphics(planeContrastPopupFig), return; end
-                ud = get(planeContrastPopupFig, 'UserData');
-                for pp = 1:numel(ud.hMins)
-                    planeContrastLimits(pp,1) = get(ud.hMins(pp), 'Value');
-                    planeContrastLimits(pp,2) = get(ud.hMaxs(pp), 'Value');
+                for pp = 1:numel(hMins)
+                    planeContrastLimits(pp,1) = get(hMins(pp), 'Value');
+                    planeContrastLimits(pp,2) = get(hMaxs(pp), 'Value');
                 end
                 currentFrameIdx = round(get(hSeekSlider, 'Value'));
                 updateFrame(currentFrameIdx);
