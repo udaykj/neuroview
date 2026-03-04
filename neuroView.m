@@ -1104,6 +1104,7 @@ updateDisplayMode();
     function launchUnifiedMoviePlayer(precomputedMovie, playerStateToApply, generationState)
         hPlotObject = []; % This will hold handle to scatter or image
         movieTimer = []; % Handle for the timer object
+        currentFrameIdx = 1; % Canonical frame index (avoids relying on slider when popup has focus)
         hNotesFig = []; % Handle for the notes window
         annotationText = ''; % Variable to hold the notes text
         
@@ -1279,18 +1280,17 @@ updateDisplayMode();
         % --- Player Nested Functions ---
         function advanceFrame(~,~)
             if ~isgraphics(hMovieFig), stop(movieTimer); return; end
-            
-            currentFrame = round(get(hSeekSlider, 'Value'));
-            if currentFrame < numMovieFrames
-                nextFrame = currentFrame + 1;
-                seekListener.Enabled = false;
-                set(hSeekSlider, 'Value', nextFrame);
-                seekListener.Enabled = true;
-                updateFrame(nextFrame);
-            else
+            if currentFrameIdx >= numMovieFrames
                 stop(movieTimer);
                 set(hPlayPauseBtn, 'String', 'Play');
+                return;
             end
+            nextFrame = currentFrameIdx + 1;
+            seekListener.Enabled = false;
+            set(hSeekSlider, 'Value', nextFrame);
+            seekListener.Enabled = true;
+            currentFrameIdx = nextFrame;
+            updateFrame(nextFrame);
         end
 
         function updateFrame(idx)
@@ -1509,6 +1509,8 @@ updateDisplayMode();
             if isgraphics(planeContrastPopupFig), figure(planeContrastPopupFig); return; end
             P = numPlanesInMovie;
             planeContrastPopupFig = figure('Name', 'Plane contrast', 'NumberTitle', 'off', 'Position', [700 200 400 min(500, 80+ P*70)]);
+            uicontrol(planeContrastPopupFig, 'Style', 'pushbutton', 'String', 'Pause playback', 'Units', 'normalized', ...
+                'Position', [0.02 0.92 0.35 0.06], 'Callback', @pausePlaybackFromPopup, 'FontSize', 9);
             hMins = zeros(P,1); hMaxs = zeros(P,1); hMinRanges = zeros(P,1); hMaxRanges = zeros(P,1);
             rangeOptions = {'0.5x', '1x', '2x', '4x', '8x'};
             rangeVals = [0.5, 1, 2, 4, 8];
@@ -1560,8 +1562,16 @@ updateDisplayMode();
                     planeContrastLimits(pp,1) = get(hMins(pp), 'Value');
                     planeContrastLimits(pp,2) = get(hMaxs(pp), 'Value');
                 end
-                currentFrameIdx = round(get(hSeekSlider, 'Value'));
+                currentFrameIdx = max(1, min(numMovieFrames, round(get(hSeekSlider, 'Value'))));
                 updateFrame(currentFrameIdx);
+            end
+
+            function pausePlaybackFromPopup(~,~)
+                if ~isgraphics(hMovieFig), return; end
+                if isobject(movieTimer) && isvalid(movieTimer) && strcmp(get(movieTimer, 'Running'), 'on')
+                    stop(movieTimer);
+                    set(hPlayPauseBtn, 'String', 'Play');
+                end
             end
         end
 
@@ -1570,9 +1580,9 @@ updateDisplayMode();
                 stop(movieTimer);
                 set(hPlayPauseBtn, 'String', 'Play');
             else
-                currentFrame = round(get(hSeekSlider, 'Value'));
-                if currentFrame >= numMovieFrames
-                    set(hSeekSlider, 'Value', 1); % Reset to first frame
+                if currentFrameIdx >= numMovieFrames
+                    currentFrameIdx = 1;
+                    set(hSeekSlider, 'Value', 1);
                     updateFrame(1);
                 end
                 start(movieTimer);
@@ -1594,7 +1604,9 @@ updateDisplayMode();
         function seekMovie(source)
             stop(movieTimer);
             set(hPlayPauseBtn, 'String', 'Play');
-            updateFrame(round(get(source, 'Value')));
+            currentFrameIdx = round(get(source, 'Value'));
+            currentFrameIdx = max(1, min(numMovieFrames, currentFrameIdx));
+            updateFrame(currentFrameIdx);
         end
 
         function updateSpeed(~,~)
