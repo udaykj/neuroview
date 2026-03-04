@@ -565,7 +565,9 @@ updateDisplayMode();
                 set(hMaxRanges(p), 'Callback', @(s,e) updatePlaneSliderRanges_avg(idx));
                 addlistener(hMins(p), 'Value', 'PostSet', @(s,e) syncPlaneLimitsFromPopup_avg());
                 addlistener(hMaxs(p), 'Value', 'PostSet', @(s,e) syncPlaneLimitsFromPopup_avg());
-                updatePlaneSliderRanges_avg(idx);
+            end
+            for pp = 1:P
+                updatePlaneSliderRanges_avg(pp);
             end
             uicontrol(planeContrastPopupFig_avg, 'Style', 'text', 'String', 'Black', 'Units', 'normalized', 'Position', [0.18 0.96 0.1 0.03]);
             uicontrol(planeContrastPopupFig_avg, 'Style', 'text', 'String', 'White', 'Units', 'normalized', 'Position', [0.55 0.96 0.1 0.03]);
@@ -588,6 +590,7 @@ updateDisplayMode();
             function syncPlaneLimitsFromPopup_avg()
                 if ~isgraphics(planeContrastPopupFig_avg), return; end
                 for pp = 1:numel(hMins)
+                    if hMins(pp) == 0 || ~isgraphics(hMins(pp)), continue; end
                     planeContrastLimits_avg(pp,1) = get(hMins(pp), 'Value');
                     planeContrastLimits_avg(pp,2) = get(hMaxs(pp), 'Value');
                 end
@@ -1520,7 +1523,9 @@ updateDisplayMode();
                 set(hMaxRanges(p), 'Callback', @(s,e) updatePlaneSliderRanges(idx));
                 addlistener(hMins(p), 'Value', 'PostSet', @(s,e) syncPlaneLimitsFromPopup());
                 addlistener(hMaxs(p), 'Value', 'PostSet', @(s,e) syncPlaneLimitsFromPopup());
-                updatePlaneSliderRanges(idx);
+            end
+            for pp = 1:P
+                updatePlaneSliderRanges(pp);
             end
             uicontrol(planeContrastPopupFig, 'Style', 'text', 'String', 'Black', 'Units', 'normalized', 'Position', [0.18 0.96 0.1 0.03]);
             uicontrol(planeContrastPopupFig, 'Style', 'text', 'String', 'White', 'Units', 'normalized', 'Position', [0.55 0.96 0.1 0.03]);
@@ -1544,6 +1549,7 @@ updateDisplayMode();
             function syncPlaneLimitsFromPopup()
                 if ~isgraphics(planeContrastPopupFig), return; end
                 for pp = 1:numel(hMins)
+                    if hMins(pp) == 0 || ~isgraphics(hMins(pp)), continue; end
                     planeContrastLimits(pp,1) = get(hMins(pp), 'Value');
                     planeContrastLimits(pp,2) = get(hMaxs(pp), 'Value');
                 end
