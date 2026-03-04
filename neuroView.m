@@ -549,19 +549,43 @@ updateDisplayMode();
             if isgraphics(planeContrastPopupFig_avg), figure(planeContrastPopupFig_avg); return; end
             P = numPlanesAvg;
             planeContrastPopupFig_avg = figure('Name', 'Plane contrast (Average)', 'NumberTitle', 'off', 'Position', [700 200 400 min(500, 80+ P*70)]);
-            hMins = zeros(P,1); hMaxs = zeros(P,1);
+            hMins = zeros(P,1); hMaxs = zeros(P,1); hMinRanges = zeros(P,1); hMaxRanges = zeros(P,1);
+            rangeOptions = {'0.5x', '1x', '2x', '4x', '8x'};
+            rangeVals = [0.5, 1, 2, 4, 8];
             for p = 1:P
+                idx = p;
                 y = 1 - (p-0.5)/max(P,1);
                 uicontrol(planeContrastPopupFig_avg, 'Style', 'text', 'String', sprintf('Plane %d', p), 'Units', 'normalized', 'Position', [0.02 y-0.03 0.15 0.06]);
                 lo = planeContrastLimits_avg(p,1); hi = planeContrastLimits_avg(p,2);
-                hMins(p) = uicontrol(planeContrastPopupFig_avg, 'Style', 'slider', 'Units', 'normalized', 'Position', [0.18 y 0.35 0.04], 'Min', lo-0.1, 'Max', hi+0.1, 'Value', lo);
-                hMaxs(p) = uicontrol(planeContrastPopupFig_avg, 'Style', 'slider', 'Units', 'normalized', 'Position', [0.55 y 0.35 0.04], 'Min', lo-0.1, 'Max', hi+0.1, 'Value', hi);
+                hMins(p) = uicontrol(planeContrastPopupFig_avg, 'Style', 'slider', 'Units', 'normalized', 'Position', [0.18 y 0.24 0.04], 'Min', lo-1, 'Max', lo+1, 'Value', lo, 'UserData', lo);
+                hMinRanges(p) = uicontrol(planeContrastPopupFig_avg, 'Style', 'popupmenu', 'String', rangeOptions, 'Value', 2, 'Units', 'normalized', 'Position', [0.43 y 0.08 0.04]);
+                hMaxs(p) = uicontrol(planeContrastPopupFig_avg, 'Style', 'slider', 'Units', 'normalized', 'Position', [0.55 y 0.24 0.04], 'Min', hi-1, 'Max', hi+1, 'Value', hi, 'UserData', hi);
+                hMaxRanges(p) = uicontrol(planeContrastPopupFig_avg, 'Style', 'popupmenu', 'String', rangeOptions, 'Value', 2, 'Units', 'normalized', 'Position', [0.80 y 0.08 0.04]);
+                set(hMinRanges(p), 'Callback', @(s,e) updatePlaneSliderRanges_avg(idx));
+                set(hMaxRanges(p), 'Callback', @(s,e) updatePlaneSliderRanges_avg(idx));
                 addlistener(hMins(p), 'Value', 'PostSet', @(s,e) syncPlaneLimitsFromPopup_avg());
                 addlistener(hMaxs(p), 'Value', 'PostSet', @(s,e) syncPlaneLimitsFromPopup_avg());
+                updatePlaneSliderRanges_avg(idx);
             end
-            set(planeContrastPopupFig_avg, 'UserData', struct('hMins', hMins, 'hMaxs', hMaxs));
+            set(planeContrastPopupFig_avg, 'UserData', struct('hMins', hMins, 'hMaxs', hMaxs, 'hMinRanges', hMinRanges, 'hMaxRanges', hMaxRanges));
             uicontrol(planeContrastPopupFig_avg, 'Style', 'text', 'String', 'Black', 'Units', 'normalized', 'Position', [0.18 0.96 0.1 0.03]);
             uicontrol(planeContrastPopupFig_avg, 'Style', 'text', 'String', 'White', 'Units', 'normalized', 'Position', [0.55 0.96 0.1 0.03]);
+            function updatePlaneSliderRanges_avg(pp)
+                lo = get(hMins(pp), 'UserData');
+                hi = get(hMaxs(pp), 'UserData');
+                baseRange = abs(hi - lo); if baseRange <= 0, baseRange = 1; end
+                multMin = rangeVals(get(hMinRanges(pp), 'Value'));
+                multMax = rangeVals(get(hMaxRanges(pp), 'Value'));
+                halfMin = baseRange * multMin;
+                halfMax = baseRange * multMax;
+                newMinLo = lo - halfMin; newMinHi = lo + halfMin;
+                newMaxLo = hi - halfMax; newMaxHi = hi + halfMax;
+                set(hMins(pp), 'Min', newMinLo, 'Max', newMinHi);
+                set(hMaxs(pp), 'Min', newMaxLo, 'Max', newMaxHi);
+                cv = get(hMins(pp), 'Value'); set(hMins(pp), 'Value', max(newMinLo, min(newMinHi, cv)));
+                cv = get(hMaxs(pp), 'Value'); set(hMaxs(pp), 'Value', max(newMaxLo, min(newMaxHi, cv)));
+                syncPlaneLimitsFromPopup_avg();
+            end
             function syncPlaneLimitsFromPopup_avg()
                 if ~isgraphics(planeContrastPopupFig_avg), return; end
                 ud = get(planeContrastPopupFig_avg, 'UserData');
@@ -1456,7 +1480,11 @@ updateDisplayMode();
         end
 
         function tf = isPlaneFalseColorEnabled()
-            tf = isMultiPlaneMovie && isgraphics(hPlaneFalseColorCheckbox) && get(hPlaneFalseColorCheckbox, 'Value');
+            tf = false;
+            if ~isMultiPlaneMovie, return; end
+            if isempty(hPlaneFalseColorCheckbox) || ~isgraphics(hPlaneFalseColorCheckbox), return; end
+            v = get(hPlaneFalseColorCheckbox, 'Value');
+            tf = isscalar(v) && logical(v);
         end
 
         function planeFalseColorToggled()
@@ -1478,19 +1506,43 @@ updateDisplayMode();
             if isgraphics(planeContrastPopupFig), figure(planeContrastPopupFig); return; end
             P = numPlanesInMovie;
             planeContrastPopupFig = figure('Name', 'Plane contrast', 'NumberTitle', 'off', 'Position', [700 200 400 min(500, 80+ P*70)]);
-            hMins = zeros(P,1); hMaxs = zeros(P,1);
+            hMins = zeros(P,1); hMaxs = zeros(P,1); hMinRanges = zeros(P,1); hMaxRanges = zeros(P,1);
+            rangeOptions = {'0.5x', '1x', '2x', '4x', '8x'};
+            rangeVals = [0.5, 1, 2, 4, 8];
             for p = 1:P
+                idx = p;
                 y = 1 - (p-0.5)/max(P,1);
                 uicontrol(planeContrastPopupFig, 'Style', 'text', 'String', sprintf('Plane %d', p), 'Units', 'normalized', 'Position', [0.02 y-0.03 0.15 0.06]);
                 lo = planeContrastLimits(p,1); hi = planeContrastLimits(p,2);
-                hMins(p) = uicontrol(planeContrastPopupFig, 'Style', 'slider', 'Units', 'normalized', 'Position', [0.18 y 0.35 0.04], 'Min', lo-0.1, 'Max', hi+0.1, 'Value', lo, 'UserData', lo);
-                hMaxs(p) = uicontrol(planeContrastPopupFig, 'Style', 'slider', 'Units', 'normalized', 'Position', [0.55 y 0.35 0.04], 'Min', lo-0.1, 'Max', hi+0.1, 'Value', hi, 'UserData', hi);
+                hMins(p) = uicontrol(planeContrastPopupFig, 'Style', 'slider', 'Units', 'normalized', 'Position', [0.18 y 0.24 0.04], 'Min', lo-1, 'Max', lo+1, 'Value', lo, 'UserData', lo);
+                hMinRanges(p) = uicontrol(planeContrastPopupFig, 'Style', 'popupmenu', 'String', rangeOptions, 'Value', 2, 'Units', 'normalized', 'Position', [0.43 y 0.08 0.04]);
+                hMaxs(p) = uicontrol(planeContrastPopupFig, 'Style', 'slider', 'Units', 'normalized', 'Position', [0.55 y 0.24 0.04], 'Min', hi-1, 'Max', hi+1, 'Value', hi, 'UserData', hi);
+                hMaxRanges(p) = uicontrol(planeContrastPopupFig, 'Style', 'popupmenu', 'String', rangeOptions, 'Value', 2, 'Units', 'normalized', 'Position', [0.80 y 0.08 0.04]);
+                set(hMinRanges(p), 'Callback', @(s,e) updatePlaneSliderRanges(idx));
+                set(hMaxRanges(p), 'Callback', @(s,e) updatePlaneSliderRanges(idx));
                 addlistener(hMins(p), 'Value', 'PostSet', @(s,e) syncPlaneLimitsFromPopup());
                 addlistener(hMaxs(p), 'Value', 'PostSet', @(s,e) syncPlaneLimitsFromPopup());
+                updatePlaneSliderRanges(idx);
             end
-            set(planeContrastPopupFig, 'UserData', struct('hMins', hMins, 'hMaxs', hMaxs));
+            set(planeContrastPopupFig, 'UserData', struct('hMins', hMins, 'hMaxs', hMaxs, 'hMinRanges', hMinRanges, 'hMaxRanges', hMaxRanges));
             uicontrol(planeContrastPopupFig, 'Style', 'text', 'String', 'Black', 'Units', 'normalized', 'Position', [0.18 0.96 0.1 0.03]);
             uicontrol(planeContrastPopupFig, 'Style', 'text', 'String', 'White', 'Units', 'normalized', 'Position', [0.55 0.96 0.1 0.03]);
+            function updatePlaneSliderRanges(pp)
+                lo = get(hMins(pp), 'UserData');
+                hi = get(hMaxs(pp), 'UserData');
+                baseRange = abs(hi - lo); if baseRange <= 0, baseRange = 1; end
+                multMin = rangeVals(get(hMinRanges(pp), 'Value'));
+                multMax = rangeVals(get(hMaxRanges(pp), 'Value'));
+                halfMin = baseRange * multMin;
+                halfMax = baseRange * multMax;
+                newMinLo = lo - halfMin; newMinHi = lo + halfMin;
+                newMaxLo = hi - halfMax; newMaxHi = hi + halfMax;
+                set(hMins(pp), 'Min', newMinLo, 'Max', newMinHi);
+                set(hMaxs(pp), 'Min', newMaxLo, 'Max', newMaxHi);
+                cv = get(hMins(pp), 'Value'); set(hMins(pp), 'Value', max(newMinLo, min(newMinHi, cv)));
+                cv = get(hMaxs(pp), 'Value'); set(hMaxs(pp), 'Value', max(newMaxLo, min(newMaxHi, cv)));
+                syncPlaneLimitsFromPopup();
+            end
 
             function syncPlaneLimitsFromPopup()
                 if ~isgraphics(planeContrastPopupFig), return; end
