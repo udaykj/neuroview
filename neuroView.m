@@ -1852,7 +1852,7 @@ updateDisplayMode();
                     originalSliderValue = get(hSeekSlider, 'Value');
                     for k = kStart:kEnd
                         frameData = getModeDataForFrame(k);
-                        tSec = (k-1) / frameRate; tStr = sprintf('t = %.1fs', round(tSec*10)/10);
+                        tSec = (k - kStart) / frameRate; tStr = sprintf('t = %.1fs', round(tSec*10)/10);
                         spStr = sprintf('%gx', speedVal);
                         if strcmp(selectedMode,'Cells')
                             set(offPlot,'CData', frameData);
