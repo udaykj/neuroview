@@ -364,8 +364,13 @@ updateDisplayMode();
             if strcmp(localState.mode, 'TIFF'), modeContrasts.Image = p_base; else, modeContrasts.Cells = p_base; end
             
             avgDataFor2D = localState.avgData;
+            isPlaneAllAvg = (strcmp(localState.mode, 'TIFF') && ndims(localState.avgData) == 3 && isfield(localState, 'ui') && localState.ui.plane > localState.TIFF.parsedNumPlanes);
             if strcmp(localState.mode, 'TIFF') && ndims(localState.avgData) == 3 && size(localState.avgData, 3) == 3
-                avgDataFor2D = mean(localState.avgData, 3);
+                if isfield(localState,'ui') && localState.ui.channel == localState.TIFF.parsedNumChannels + 1
+                    avgDataFor2D = mean(localState.avgData, 3);
+                elseif isPlaneAllAvg
+                    avgDataFor2D = sum(localState.avgData, 3);
+                end
             end
             if ~isempty(localState.Neural.vareaData)
                 [areaImg, ~] = createAreaAverageImage(avgDataFor2D, localState, true);
@@ -381,11 +386,27 @@ updateDisplayMode();
             if any(isnan(p_grid)) || p_grid(1) >= p_grid(2), p_grid = [0 1]; end
             modeContrasts.Grid = p_grid;
 
-            isMergeAvg = (strcmp(localState.mode, 'TIFF') && ndims(localState.avgData) == 3 && size(localState.avgData, 3) == 3);
+            isMergeAvg = (strcmp(localState.mode, 'TIFF') && ndims(localState.avgData) == 3 && size(localState.avgData, 3) == 3 && isfield(localState,'ui') && localState.ui.channel == localState.TIFF.parsedNumChannels + 1);
             if isMergeAvg
                 contrastHandles = createMergeContrastControls(hPlotFig, hAxes, [0.1 0.01 0.8 0.09], localState.avgData, displayHandles);
             else
                 contrastHandles = createContrastControls(hPlotFig, hAxes, [0.1 0.01 0.8 0.09], modeContrasts, displayHandles);
+            end
+            hPlaneFalseColorCheckbox_avg = [];
+            planeContrastPopupFig_avg = [];
+            planeContrastLimits_avg = [];
+            planePalette_avg = [];
+            numPlanesAvg = ifelse(isPlaneAllAvg, size(localState.avgData, 3), 1);
+            if isPlaneAllAvg
+                planePalette_avg = lines(numPlanesAvg);
+                planeContrastLimits_avg = zeros(numPlanesAvg, 2);
+                for p = 1:numPlanesAvg
+                    pr = prctile(localState.avgData(:,:,p), [2 98]);
+                    if pr(1) >= pr(2), pr = [0 1]; end
+                    planeContrastLimits_avg(p,:) = pr;
+                end
+                hPlaneFalseColorCheckbox_avg = uicontrol('Parent', hPlotFig, 'Style', 'checkbox', 'String', 'Plane-wise false color', ...
+                    'Value', 0, 'Units', 'normalized', 'Position', [0.1 0.14 0.22 0.02], 'Callback', @(s,e) planeFalseColorToggled_avg(), 'BackgroundColor', get(hPlotFig, 'Color'));
             end
             hPlotObject = []; 
             
@@ -441,14 +462,21 @@ updateDisplayMode();
                 physH = T.pixelHeight / T.y_pixels_per_unit;
                 avgDataFor2D = localState.avgData;
                 if ndims(localState.avgData) == 3 && size(localState.avgData, 3) == 3
-                    avgDataFor2D = mean(localState.avgData, 3);
+                    if isMergeAvg
+                        avgDataFor2D = mean(localState.avgData, 3);
+                    elseif isPlaneAllAvg
+                        avgDataFor2D = sum(localState.avgData, 3);
+                    end
                 end
                 if strcmp(selectedMode, 'Image')
-                    if ndims(localState.avgData) == 3 && size(localState.avgData, 3) == 3
+                    if isPlaneAllAvg && isgraphics(hPlaneFalseColorCheckbox_avg) && get(hPlaneFalseColorCheckbox_avg, 'Value')
+                        cdata = buildPlaneFalseColorFrame_avg(localState.avgData, planeContrastLimits_avg, planePalette_avg);
+                        hPlotObject = imagesc(hAxes, [0 physW], [0 physH], cdata);
+                    elseif ndims(localState.avgData) == 3 && size(localState.avgData, 3) == 3 && isMergeAvg
                         cdata = double(min(1, max(0, localState.avgData)));
                         hPlotObject = imagesc(hAxes, [0 physW], [0 physH], cdata);
                     else
-                        hPlotObject = imagesc(hAxes, [0 physW], [0 physH], localState.avgData);
+                        hPlotObject = imagesc(hAxes, [0 physW], [0 physH], avgDataFor2D);
                     end
                 elseif strcmp(selectedMode, 'Grid')
                     gridSize = str2double(get(displayHandles.gridSizeEdit, 'String'));
@@ -486,6 +514,62 @@ updateDisplayMode();
             if isTiffMode, set(hAxes, 'YDir', 'normal'); end
             if ~isempty(vareaHandles), vareaHandles.updateAll(); end
             contrastHandles.reapplyColormap();
+        end
+
+        function rgb = buildPlaneFalseColorFrame_avg(avgP, limits, palette)
+            H = size(avgP,1); W = size(avgP,2); P = size(avgP,3);
+            rgb = zeros(H, W, 3);
+            for p = 1:P
+                span = limits(p,2) - limits(p,1) + eps;
+                s = min(1, max(0, (double(avgP(:,:,p)) - limits(p,1)) / span));
+                for c = 1:3
+                    rgb(:,:,c) = rgb(:,:,c) + palette(p,c) * s;
+                end
+            end
+            mx = max(rgb(:)); if mx > 0, rgb = rgb / mx; end
+            rgb = min(1, max(0, rgb));
+        end
+
+        function planeFalseColorToggled_avg()
+            checked = get(hPlaneFalseColorCheckbox_avg, 'Value');
+            if checked
+                set(contrastHandles.cmapDropdown, 'Visible', 'off');
+                set(contrastHandles.invertCmap, 'Visible', 'off');
+                openPlaneContrastPopup_avg();
+            else
+                set(contrastHandles.cmapDropdown, 'Visible', 'on');
+                set(contrastHandles.invertCmap, 'Visible', 'on');
+                if isgraphics(planeContrastPopupFig_avg), close(planeContrastPopupFig_avg); planeContrastPopupFig_avg = []; end
+            end
+            displayModeChanged_static();
+        end
+
+        function openPlaneContrastPopup_avg()
+            if isgraphics(planeContrastPopupFig_avg), figure(planeContrastPopupFig_avg); return; end
+            P = numPlanesAvg;
+            planeContrastPopupFig_avg = figure('Name', 'Plane contrast (Average)', 'NumberTitle', 'off', 'Position', [700 200 400 min(500, 80+ P*70)]);
+            hMins = zeros(P,1); hMaxs = zeros(P,1);
+            for p = 1:P
+                y = 1 - (p-0.5)/max(P,1);
+                uicontrol(planeContrastPopupFig_avg, 'Style', 'text', 'String', sprintf('Plane %d', p), 'Units', 'normalized', 'Position', [0.02 y-0.03 0.15 0.06]);
+                lo = planeContrastLimits_avg(p,1); hi = planeContrastLimits_avg(p,2);
+                hMins(p) = uicontrol(planeContrastPopupFig_avg, 'Style', 'slider', 'Units', 'normalized', 'Position', [0.18 y 0.35 0.04], 'Min', lo-0.1, 'Max', hi+0.1, 'Value', lo);
+                hMaxs(p) = uicontrol(planeContrastPopupFig_avg, 'Style', 'slider', 'Units', 'normalized', 'Position', [0.55 y 0.35 0.04], 'Min', lo-0.1, 'Max', hi+0.1, 'Value', hi);
+                addlistener(hMins(p), 'Value', 'PostSet', @(s,e) syncPlaneLimitsFromPopup_avg());
+                addlistener(hMaxs(p), 'Value', 'PostSet', @(s,e) syncPlaneLimitsFromPopup_avg());
+            end
+            set(planeContrastPopupFig_avg, 'UserData', struct('hMins', hMins, 'hMaxs', hMaxs));
+            uicontrol(planeContrastPopupFig_avg, 'Style', 'text', 'String', 'Black', 'Units', 'normalized', 'Position', [0.18 0.96 0.1 0.03]);
+            uicontrol(planeContrastPopupFig_avg, 'Style', 'text', 'String', 'White', 'Units', 'normalized', 'Position', [0.55 0.96 0.1 0.03]);
+            function syncPlaneLimitsFromPopup_avg()
+                if ~isgraphics(planeContrastPopupFig_avg), return; end
+                ud = get(planeContrastPopupFig_avg, 'UserData');
+                for pp = 1:numel(ud.hMins)
+                    planeContrastLimits_avg(pp,1) = get(ud.hMins(pp), 'Value');
+                    planeContrastLimits_avg(pp,2) = get(ud.hMaxs(pp), 'Value');
+                end
+                displayModeChanged_static();
+            end
         end
     end
 
@@ -973,8 +1057,9 @@ updateDisplayMode();
                 td = ndims(processedData);
                 nT = size(processedData, td);
                 if td == 4
+                    nC = size(processedData, 3);
                     for i = 1:nT
-                        for c = 1:3
+                        for c = 1:nC
                             processedData(:,:,c,i) = applySpatialSmoothing_TIFF(processedData(:,:,c,i), sigma_microns);
                         end
                     end
@@ -1009,8 +1094,10 @@ updateDisplayMode();
         traceYLimAuto = 1; % 1=auto scale; 0=fixed (persisted in playerState)
         traceYLim = [];    % [ymin ymax] when fixed
         
-        isImageData = (ndims(precomputedMovie) == 3) || (ndims(precomputedMovie) == 4 && size(precomputedMovie, 3) == 3);
-        isRgbMovie = (ndims(precomputedMovie) == 4 && size(precomputedMovie, 3) == 3);
+        isMultiPlaneMovie = (ndims(precomputedMovie) == 4 && size(precomputedMovie, 3) >= 2);
+        numPlanesInMovie = ifelse(isMultiPlaneMovie, size(precomputedMovie, 3), 1);
+        isImageData = (ndims(precomputedMovie) == 3) || (ndims(precomputedMovie) == 4 && size(precomputedMovie, 3) >= 2);
+        isRgbMovie = (ndims(precomputedMovie) == 4 && size(precomputedMovie, 3) == 3 && ~isMultiPlaneMovie);
         frameRate = generationState.frameRate;
         
         % Check for existing annotation text in the loaded state
@@ -1019,7 +1106,7 @@ updateDisplayMode();
         end
         
         try
-            numMovieFrames = size(precomputedMovie, ifelse(isRgbMovie, 4, ifelse(isImageData, 3, 2)));
+            numMovieFrames = size(precomputedMovie, ifelse(ndims(precomputedMovie) == 4, 4, ifelse(isImageData, 3, 2)));
             
             hMovieFig = figure('Name', 'Unified Activity Movie Player', 'NumberTitle', 'off', ...
                 'Position', [600 100 600, 900], 'Resize', 'on', 'CloseRequestFcn', @stopMovie);
@@ -1074,7 +1161,7 @@ updateDisplayMode();
             midFrameIdx = round(numMovieFrames / 2);
             if midFrameIdx == 0, midFrameIdx = 1; end
 
-            p = prctile(precomputedMovie(:), [2 98]);
+            p = prctile(ifelse(isMultiPlaneMovie, effectiveMovie(:), precomputedMovie(:)), [2 98]);
             if any(isnan(p)) || p(1) >= p(2), p = [0 1]; end
             if isImageData, modeContrasts.Image = p; else, modeContrasts.Cells = p; end
             
@@ -1089,6 +1176,27 @@ updateDisplayMode();
                 p_area = prctile(areaFrame(:), [2 98]);
                 if any(isnan(p_area)) || p_area(1) >= p_area(2), p_area = [0 1]; end
                 modeContrasts.Areas = p_area;
+            end
+
+            effectiveMovie = [];
+            if isMultiPlaneMovie
+                effectiveMovie = sum(precomputedMovie, 3);
+            end
+            hPlaneFalseColorCheckbox = uicontrol('Parent', hMovieFig, 'Style', 'checkbox', 'String', 'Plane-wise false color', ...
+                'Value', 0, 'Units', 'normalized', 'Position', [0.1 0.17 0.25 0.02], 'Visible', ifelse(isMultiPlaneMovie, 'on', 'off'), ...
+                'Callback', @(s,e) planeFalseColorToggled(), 'BackgroundColor', get(hMovieFig, 'Color'));
+            planeContrastPopupFig = [];
+            planeContrastLimits = [];
+            planePalette = [];
+            if isMultiPlaneMovie
+                planePalette = lines(numPlanesInMovie);
+                planeContrastLimits = zeros(numPlanesInMovie, 2);
+                for p = 1:numPlanesInMovie
+                    planeData = precomputedMovie(:,:,p,:);
+                    pr = prctile(planeData(:), [2 98]);
+                    if pr(1) >= pr(2), pr = [0 1]; end
+                    planeContrastLimits(p,:) = pr;
+                end
             end
 
             contrastHandles = createContrastControls(hMovieFig, hAxes, [0.1 0.01 0.8 0.09], modeContrasts, displayHandles);
@@ -1162,7 +1270,13 @@ updateDisplayMode();
             modeOptions = get(displayHandles.modeDropdown, 'String');
             selectedMode = modeOptions{get(displayHandles.modeDropdown, 'Value')};
             
-            if isRgbMovie
+            if isMultiPlaneMovie && get(hPlaneFalseColorCheckbox, 'Value') && strcmp(selectedMode, 'Image')
+                frameP = precomputedMovie(:,:,:,idx);
+                rgb = buildPlaneFalseColorFrame(frameP, planeContrastLimits, planePalette);
+                currentFrameData = rgb;
+            elseif isMultiPlaneMovie
+                currentFrameData = effectiveMovie(:,:,idx);
+            elseif isRgbMovie
                 currentFrameData = precomputedMovie(:,:,:,idx);
             elseif isImageData
                 currentFrameData = precomputedMovie(:,:,idx);
@@ -1181,9 +1295,8 @@ updateDisplayMode();
                 physW = T.pixelWidth / T.x_pixels_per_unit;
                 physH = T.pixelHeight / T.y_pixels_per_unit;
                 if strcmp(selectedMode, 'Image')
-                    if isRgbMovie
-                        % Ensure m-by-n-by-3 double in [0,1] for truecolor CData
-                        cdata = double(squeeze(currentFrameData));
+                    if (isMultiPlaneMovie && get(hPlaneFalseColorCheckbox, 'Value')) || isRgbMovie
+                        cdata = double(currentFrameData);
                         if size(cdata, 3) ~= 3
                             cdata = mean(cdata, 3); cdata = repmat(cdata, [1 1 3]);
                         end
@@ -1245,11 +1358,14 @@ updateDisplayMode();
                     physW = T.pixelWidth / T.x_pixels_per_unit;
                     physH = T.pixelHeight / T.y_pixels_per_unit;
                 end
-                if isRgbMovie && strcmp(selectedMode, 'Image')
-                    % Create truecolor image with first frame so CData is m-by-n-by-3 from the start
-                    firstCData = precomputedMovie(:,:,:,currentFrameIdx);
-                    firstCData = double(squeeze(firstCData));
-                    firstCData = min(1, max(0, firstCData));
+                if (isRgbMovie || (isMultiPlaneMovie && get(hPlaneFalseColorCheckbox, 'Value'))) && strcmp(selectedMode, 'Image')
+                    if isRgbMovie
+                        firstCData = precomputedMovie(:,:,:,currentFrameIdx);
+                        firstCData = double(squeeze(firstCData));
+                        firstCData = min(1, max(0, firstCData));
+                    else
+                        firstCData = buildPlaneFalseColorFrame(precomputedMovie(:,:,:,currentFrameIdx), planeContrastLimits, planePalette);
+                    end
                     if size(firstCData, 3) == 3
                         hPlotObject = imagesc(hAxes, [0 physW], [0 physH], firstCData);
                     else
@@ -1289,7 +1405,11 @@ updateDisplayMode();
                  selectedMode = modeOverride;
              end
              
-             if isRgbMovie
+             if isMultiPlaneMovie && get(hPlaneFalseColorCheckbox, 'Value')
+                 frameData = buildPlaneFalseColorFrame(precomputedMovie(:,:,:,idx), planeContrastLimits, planePalette);
+             elseif isMultiPlaneMovie
+                 frameData = effectiveMovie(:,:,idx);
+             elseif isRgbMovie
                  frameData = precomputedMovie(:,:,:,idx);
              elseif isImageData
                  frameData = precomputedMovie(:,:,idx);
@@ -1316,6 +1436,65 @@ updateDisplayMode();
              else
                  data = frameData;
              end
+        end
+
+        function rgb = buildPlaneFalseColorFrame(frameP, limits, palette)
+            H = size(frameP,1); W = size(frameP,2); P = size(frameP,3);
+            rgb = zeros(H, W, 3);
+            for p = 1:P
+                span = limits(p,2) - limits(p,1) + eps;
+                s = min(1, max(0, (double(frameP(:,:,p)) - limits(p,1)) / span));
+                for c = 1:3
+                    rgb(:,:,c) = rgb(:,:,c) + palette(p,c) * s;
+                end
+            end
+            mx = max(rgb(:)); if mx > 0, rgb = rgb / mx; end
+            rgb = min(1, max(0, rgb));
+        end
+
+        function planeFalseColorToggled()
+            checked = get(hPlaneFalseColorCheckbox, 'Value');
+            if checked
+                set(contrastHandles.cmapDropdown, 'Visible', 'off');
+                set(contrastHandles.invertCmap, 'Visible', 'off');
+                openPlaneContrastPopup();
+            else
+                set(contrastHandles.cmapDropdown, 'Visible', 'on');
+                set(contrastHandles.invertCmap, 'Visible', 'on');
+                if isgraphics(planeContrastPopupFig), close(planeContrastPopupFig); planeContrastPopupFig = []; end
+            end
+            currentFrameIdx = round(get(hSeekSlider, 'Value'));
+            updateFrame(currentFrameIdx);
+        end
+
+        function openPlaneContrastPopup()
+            if isgraphics(planeContrastPopupFig), figure(planeContrastPopupFig); return; end
+            P = numPlanesInMovie;
+            planeContrastPopupFig = figure('Name', 'Plane contrast', 'NumberTitle', 'off', 'Position', [700 200 400 min(500, 80+ P*70)]);
+            hMins = zeros(P,1); hMaxs = zeros(P,1);
+            for p = 1:P
+                y = 1 - (p-0.5)/max(P,1);
+                uicontrol(planeContrastPopupFig, 'Style', 'text', 'String', sprintf('Plane %d', p), 'Units', 'normalized', 'Position', [0.02 y-0.03 0.15 0.06]);
+                lo = planeContrastLimits(p,1); hi = planeContrastLimits(p,2);
+                hMins(p) = uicontrol(planeContrastPopupFig, 'Style', 'slider', 'Units', 'normalized', 'Position', [0.18 y 0.35 0.04], 'Min', lo-0.1, 'Max', hi+0.1, 'Value', lo, 'UserData', lo);
+                hMaxs(p) = uicontrol(planeContrastPopupFig, 'Style', 'slider', 'Units', 'normalized', 'Position', [0.55 y 0.35 0.04], 'Min', lo-0.1, 'Max', hi+0.1, 'Value', hi, 'UserData', hi);
+                addlistener(hMins(p), 'Value', 'PostSet', @(s,e) syncPlaneLimitsFromPopup());
+                addlistener(hMaxs(p), 'Value', 'PostSet', @(s,e) syncPlaneLimitsFromPopup());
+            end
+            set(planeContrastPopupFig, 'UserData', struct('hMins', hMins, 'hMaxs', hMaxs));
+            uicontrol(planeContrastPopupFig, 'Style', 'text', 'String', 'Black', 'Units', 'normalized', 'Position', [0.18 0.96 0.1 0.03]);
+            uicontrol(planeContrastPopupFig, 'Style', 'text', 'String', 'White', 'Units', 'normalized', 'Position', [0.55 0.96 0.1 0.03]);
+
+            function syncPlaneLimitsFromPopup()
+                if ~isgraphics(planeContrastPopupFig), return; end
+                ud = get(planeContrastPopupFig, 'UserData');
+                for pp = 1:numel(ud.hMins)
+                    planeContrastLimits(pp,1) = get(ud.hMins(pp), 'Value');
+                    planeContrastLimits(pp,2) = get(ud.hMaxs(pp), 'Value');
+                end
+                currentFrameIdx = round(get(hSeekSlider, 'Value'));
+                updateFrame(currentFrameIdx);
+            end
         end
 
         function togglePlay(~,~)
@@ -2576,16 +2755,28 @@ updateDisplayMode();
                         avgMovie(:,:,3,i) = 0;
                     end
                 else
-                    avgMovie = zeros(H, W, minTrialLength, 'double');
-                    for i = 1:minTrialLength
-                        sumFrame = zeros(H, W, 'double');
-                        for k = 1:numel(trialFilePaths)
-                            fp = framesPerTrialPerPlane{k};
+                    if numel(planeList) > 1
+                        avgMovie = zeros(H, W, numel(planeList), minTrialLength, 'double');
+                        for i = 1:minTrialLength
                             for p = 1:numel(planeList)
-                                sumFrame = sumFrame + double(stitchFrame_TIFF(imread(trialFilePaths{k}, fp{p}(i)), infoFirstPerTrial{k}, T.roiData));
+                                sumFrame = zeros(H, W, 'double');
+                                for k = 1:numel(trialFilePaths)
+                                    fp = framesPerTrialPerPlane{k};
+                                    sumFrame = sumFrame + double(stitchFrame_TIFF(imread(trialFilePaths{k}, fp{p}(i)), infoFirstPerTrial{k}, T.roiData));
+                                end
+                                avgMovie(:,:,p,i) = sumFrame / numel(trialFilePaths);
                             end
                         end
-                        avgMovie(:,:,i) = sumFrame / (numel(trialFilePaths) * numel(planeList));
+                    else
+                        avgMovie = zeros(H, W, minTrialLength, 'double');
+                        for i = 1:minTrialLength
+                            sumFrame = zeros(H, W, 'double');
+                            for k = 1:numel(trialFilePaths)
+                                fp = framesPerTrialPerPlane{k};
+                                sumFrame = sumFrame + double(stitchFrame_TIFF(imread(trialFilePaths{k}, fp{1}(i)), infoFirstPerTrial{k}, T.roiData));
+                            end
+                            avgMovie(:,:,i) = sumFrame / numel(trialFilePaths);
+                        end
                     end
                 end
             else
@@ -2627,14 +2818,22 @@ updateDisplayMode();
                     if ~isnan(maxFramesVal) && maxFramesVal > 0
                         allFrames = allFrames(1:min(numel(allFrames), round(maxFramesVal)));
                     end
-                    avgMovie = zeros(H, W, numel(allFrames), 'double');
-                    for i = 1:numel(allFrames)
-                        sumFrame = zeros(H, W, 'double');
-                        for p = 1:numel(planeList)
-                            fp = getFramesForPlaneChannel_TIFF(planeList(p), channelNum, nF);
-                            sumFrame = sumFrame + double(stitchFrame_TIFF(imread(T.fullFilePath, fp(i)), info(1), T.roiData));
+                    if numel(planeList) > 1
+                        avgMovie = zeros(H, W, numel(planeList), numel(allFrames), 'double');
+                        for i = 1:numel(allFrames)
+                            for p = 1:numel(planeList)
+                                fp = getFramesForPlaneChannel_TIFF(planeList(p), channelNum, nF);
+                                avgMovie(:,:,p,i) = double(stitchFrame_TIFF(imread(T.fullFilePath, fp(i)), info(1), T.roiData));
+                            end
                         end
-                        avgMovie(:,:,i) = sumFrame / numel(planeList);
+                    else
+                        avgMovie = zeros(H, W, numel(allFrames), 'double');
+                        for i = 1:numel(allFrames)
+                            sumFrame = zeros(H, W, 'double');
+                            fp = getFramesForPlaneChannel_TIFF(planeList(1), channelNum, nF);
+                            sumFrame = double(stitchFrame_TIFF(imread(T.fullFilePath, fp(i)), info(1), T.roiData));
+                            avgMovie(:,:,i) = sumFrame;
+                        end
                     end
                 end
             end
