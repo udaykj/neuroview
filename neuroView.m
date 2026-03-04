@@ -1294,6 +1294,7 @@ updateDisplayMode();
         end
 
         function updateFrame(idx)
+            if ~isgraphics(hMovieFig), return; end
             if ~isgraphics(hPlotObject), return; end
             modeOptions = get(displayHandles.modeDropdown, 'String');
             selectedMode = modeOptions{get(displayHandles.modeDropdown, 'Value')};
@@ -1359,6 +1360,7 @@ updateDisplayMode();
             end
             set(hFrameCounter, 'String', sprintf('Frame %d/%d', idx, numMovieFrames));
             updateTraceCursor(idx);
+            drawnow('update');
         end
 
         function displayModeChanged()
@@ -1548,6 +1550,11 @@ updateDisplayMode();
 
             function syncPlaneLimitsFromPopup()
                 if ~isgraphics(planeContrastPopupFig), return; end
+                if ~isgraphics(hMovieFig) || ~isgraphics(hSeekSlider)
+                    try, if isgraphics(planeContrastPopupFig), close(planeContrastPopupFig); end, catch, end
+                    planeContrastPopupFig = [];
+                    return;
+                end
                 for pp = 1:numel(hMins)
                     if hMins(pp) == 0 || ~isgraphics(hMins(pp)), continue; end
                     planeContrastLimits(pp,1) = get(hMins(pp), 'Value');
@@ -1580,6 +1587,7 @@ updateDisplayMode();
             end
             if isgraphics(hNotesFig), delete(hNotesFig); end
             if isgraphics(hTracesFig), delete(hTracesFig); end
+            if isgraphics(planeContrastPopupFig), close(planeContrastPopupFig); planeContrastPopupFig = []; end
             if isgraphics(hMovieFig), delete(hMovieFig); end
         end
 
