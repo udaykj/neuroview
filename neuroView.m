@@ -401,9 +401,10 @@ updateDisplayMode();
                 planePalette_avg = lines(numPlanesAvg);
                 planeContrastLimits_avg = zeros(numPlanesAvg, 2);
                 for p = 1:numPlanesAvg
-                    pr = prctile(localState.avgData(:,:,p), [2 98]);
+                    planeP = localState.avgData(:,:,p);
+                    pr = prctile(planeP(:), [2 98]);
                     if pr(1) >= pr(2), pr = [0 1]; end
-                    planeContrastLimits_avg(p,:) = pr;
+                    planeContrastLimits_avg(p,:) = pr(:)';
                 end
                 hPlaneFalseColorCheckbox_avg = uicontrol('Parent', hPlotFig, 'Style', 'checkbox', 'String', 'Plane-wise false color', ...
                     'Value', 0, 'Units', 'normalized', 'Position', [0.1 0.14 0.22 0.02], 'Callback', @(s,e) planeFalseColorToggled_avg(), 'BackgroundColor', get(hPlotFig, 'Color'));
@@ -1156,6 +1157,11 @@ updateDisplayMode();
                 set(displayHandles.modeDropdown, 'String', neuralModes);
             end
 
+            effectiveMovie = [];
+            if isMultiPlaneMovie
+                effectiveMovie = sum(precomputedMovie, 3);
+            end
+
             % --- Pre-calculate contrast limits for each display mode BEFORE creating controls ---
             modeContrasts = struct();
             midFrameIdx = round(numMovieFrames / 2);
@@ -1178,10 +1184,6 @@ updateDisplayMode();
                 modeContrasts.Areas = p_area;
             end
 
-            effectiveMovie = [];
-            if isMultiPlaneMovie
-                effectiveMovie = sum(precomputedMovie, 3);
-            end
             hPlaneFalseColorCheckbox = uicontrol('Parent', hMovieFig, 'Style', 'checkbox', 'String', 'Plane-wise false color', ...
                 'Value', 0, 'Units', 'normalized', 'Position', [0.1 0.17 0.25 0.02], 'Visible', ifelse(isMultiPlaneMovie, 'on', 'off'), ...
                 'Callback', @(s,e) planeFalseColorToggled(), 'BackgroundColor', get(hMovieFig, 'Color'));
