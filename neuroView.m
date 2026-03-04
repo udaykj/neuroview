@@ -365,11 +365,11 @@ updateDisplayMode();
             
             avgDataFor2D = localState.avgData;
             isPlaneAllAvg = (strcmp(localState.mode, 'TIFF') && ndims(localState.avgData) == 3 && isfield(localState, 'ui') && localState.ui.plane > localState.TIFF.parsedNumPlanes);
-            if strcmp(localState.mode, 'TIFF') && ndims(localState.avgData) == 3 && size(localState.avgData, 3) == 3
-                if isfield(localState,'ui') && localState.ui.channel == localState.TIFF.parsedNumChannels + 1
-                    avgDataFor2D = mean(localState.avgData, 3);
-                elseif isPlaneAllAvg
+            if strcmp(localState.mode, 'TIFF') && ndims(localState.avgData) == 3
+                if isPlaneAllAvg
                     avgDataFor2D = sum(localState.avgData, 3);
+                elseif isfield(localState,'ui') && localState.ui.channel == localState.TIFF.parsedNumChannels + 1 && size(localState.avgData, 3) == 3
+                    avgDataFor2D = mean(localState.avgData, 3);
                 end
             end
             if ~isempty(localState.Neural.vareaData)
@@ -462,11 +462,11 @@ updateDisplayMode();
                 physW = T.pixelWidth / T.x_pixels_per_unit;
                 physH = T.pixelHeight / T.y_pixels_per_unit;
                 avgDataFor2D = localState.avgData;
-                if ndims(localState.avgData) == 3 && size(localState.avgData, 3) == 3
-                    if isMergeAvg
-                        avgDataFor2D = mean(localState.avgData, 3);
-                    elseif isPlaneAllAvg
+                if ndims(localState.avgData) == 3
+                    if isPlaneAllAvg
                         avgDataFor2D = sum(localState.avgData, 3);
+                    elseif isMergeAvg && size(localState.avgData, 3) == 3
+                        avgDataFor2D = mean(localState.avgData, 3);
                     end
                 end
                 if strcmp(selectedMode, 'Image')
@@ -1157,6 +1157,7 @@ updateDisplayMode();
                 set(displayHandles.modeDropdown, 'String', neuralModes);
             end
 
+            hPlaneFalseColorCheckbox = [];
             effectiveMovie = [];
             if isMultiPlaneMovie
                 effectiveMovie = sum(precomputedMovie, 3);
@@ -1272,7 +1273,7 @@ updateDisplayMode();
             modeOptions = get(displayHandles.modeDropdown, 'String');
             selectedMode = modeOptions{get(displayHandles.modeDropdown, 'Value')};
             
-            if isMultiPlaneMovie && get(hPlaneFalseColorCheckbox, 'Value') && strcmp(selectedMode, 'Image')
+            if isPlaneFalseColorEnabled() && strcmp(selectedMode, 'Image')
                 frameP = precomputedMovie(:,:,:,idx);
                 rgb = buildPlaneFalseColorFrame(frameP, planeContrastLimits, planePalette);
                 currentFrameData = rgb;
@@ -1297,7 +1298,7 @@ updateDisplayMode();
                 physW = T.pixelWidth / T.x_pixels_per_unit;
                 physH = T.pixelHeight / T.y_pixels_per_unit;
                 if strcmp(selectedMode, 'Image')
-                    if (isMultiPlaneMovie && get(hPlaneFalseColorCheckbox, 'Value')) || isRgbMovie
+                    if isPlaneFalseColorEnabled() || isRgbMovie
                         cdata = double(currentFrameData);
                         if size(cdata, 3) ~= 3
                             cdata = mean(cdata, 3); cdata = repmat(cdata, [1 1 3]);
@@ -1360,7 +1361,7 @@ updateDisplayMode();
                     physW = T.pixelWidth / T.x_pixels_per_unit;
                     physH = T.pixelHeight / T.y_pixels_per_unit;
                 end
-                if (isRgbMovie || (isMultiPlaneMovie && get(hPlaneFalseColorCheckbox, 'Value'))) && strcmp(selectedMode, 'Image')
+                if (isRgbMovie || isPlaneFalseColorEnabled()) && strcmp(selectedMode, 'Image')
                     if isRgbMovie
                         firstCData = precomputedMovie(:,:,:,currentFrameIdx);
                         firstCData = double(squeeze(firstCData));
@@ -1407,7 +1408,7 @@ updateDisplayMode();
                  selectedMode = modeOverride;
              end
              
-             if isMultiPlaneMovie && get(hPlaneFalseColorCheckbox, 'Value')
+             if isPlaneFalseColorEnabled()
                  frameData = buildPlaneFalseColorFrame(precomputedMovie(:,:,:,idx), planeContrastLimits, planePalette);
              elseif isMultiPlaneMovie
                  frameData = effectiveMovie(:,:,idx);
@@ -1452,6 +1453,10 @@ updateDisplayMode();
             end
             mx = max(rgb(:)); if mx > 0, rgb = rgb / mx; end
             rgb = min(1, max(0, rgb));
+        end
+
+        function tf = isPlaneFalseColorEnabled()
+            tf = isMultiPlaneMovie && isgraphics(hPlaneFalseColorCheckbox) && get(hPlaneFalseColorCheckbox, 'Value');
         end
 
         function planeFalseColorToggled()
