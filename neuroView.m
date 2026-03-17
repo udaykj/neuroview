@@ -362,6 +362,8 @@ updateDisplayMode();
             
             displayHandles = createDisplayModeControls(hPlotFig, [0.1 0.16 0.8 0.05]);
             markerHandles = createMarkerControls(hPlotFig, [0.1 0.1 0.8 0.05]);
+            hUndockedFig_avg = []; hUndockedAxes_avg = []; hUndockedPlot_avg = [];
+            isSyncingLimits_avg = false;
             axisUiPanel = uipanel('Parent', hPlotFig, 'Title', 'View Limits', 'Units', 'normalized', 'Position', [0.1 0.31 0.8 0.035]);
             uicontrol('Parent', axisUiPanel, 'Style', 'text', 'String', 'X:', 'Units', 'normalized', 'Position', [0.02 0.12 0.04 0.76], 'HorizontalAlignment', 'left');
             hXMinEdit_avg = uicontrol('Parent', axisUiPanel, 'Style', 'edit', 'String', '', 'Units', 'normalized', 'Position', [0.06 0.15 0.15 0.70], 'Callback', @(s,e) applyAxisLimits_avg());
@@ -369,7 +371,8 @@ updateDisplayMode();
             uicontrol('Parent', axisUiPanel, 'Style', 'text', 'String', 'Y:', 'Units', 'normalized', 'Position', [0.42 0.12 0.04 0.76], 'HorizontalAlignment', 'left');
             hYMinEdit_avg = uicontrol('Parent', axisUiPanel, 'Style', 'edit', 'String', '', 'Units', 'normalized', 'Position', [0.46 0.15 0.15 0.70], 'Callback', @(s,e) applyAxisLimits_avg());
             hYMaxEdit_avg = uicontrol('Parent', axisUiPanel, 'Style', 'edit', 'String', '', 'Units', 'normalized', 'Position', [0.62 0.15 0.15 0.70], 'Callback', @(s,e) applyAxisLimits_avg());
-            hAxisApplyBtn_avg = uicontrol('Parent', axisUiPanel, 'Style', 'pushbutton', 'String', 'Apply', 'Units', 'normalized', 'Position', [0.80 0.15 0.18 0.70], 'Callback', @(s,e) applyAxisLimits_avg());
+            hAxisApplyBtn_avg = uicontrol('Parent', axisUiPanel, 'Style', 'pushbutton', 'String', 'Apply', 'Units', 'normalized', 'Position', [0.78 0.15 0.10 0.70], 'Callback', @(s,e) applyAxisLimits_avg());
+            hPopoutBtn_avg = uicontrol('Parent', axisUiPanel, 'Style', 'pushbutton', 'String', 'Popout', 'Units', 'normalized', 'Position', [0.89 0.15 0.10 0.70], 'Callback', @(s,e) togglePopout_avg());
             
             modeContrasts = struct();
             p_base = prctile(localState.avgData(:), [2 98]);
@@ -447,6 +450,7 @@ updateDisplayMode();
             try
                 addlistener(hAxes, 'XLim', 'PostSet', @(s,e) syncAxisLimitEditors_avg());
                 addlistener(hAxes, 'YLim', 'PostSet', @(s,e) syncAxisLimitEditors_avg());
+                addlistener(hAxes, 'CLim', 'PostSet', @(s,e) syncMainToUndocked_avg());
             catch
             end
             try
@@ -540,6 +544,7 @@ updateDisplayMode();
             if ~isempty(vareaHandles), vareaHandles.updateAll(); end
             contrastHandles.reapplyColormap();
             syncAxisLimitEditors_avg();
+            refreshUndocked_avg();
         end
 
         function syncAxisLimitEditors_avg()
@@ -549,6 +554,7 @@ updateDisplayMode();
             set(hXMaxEdit_avg, 'String', sprintf('%.3f', xl(2)));
             set(hYMinEdit_avg, 'String', sprintf('%.3f', yl(1)));
             set(hYMaxEdit_avg, 'String', sprintf('%.3f', yl(2)));
+            syncMainToUndocked_avg();
         end
 
         function applyAxisLimits_avg()
@@ -562,6 +568,84 @@ updateDisplayMode();
                 return;
             end
             xlim(hAxes, [x1 x2]); ylim(hAxes, [y1 y2]);
+            syncAxisLimitEditors_avg();
+        end
+
+        function togglePopout_avg()
+            if isscalar(hUndockedFig_avg) && isgraphics(hUndockedFig_avg)
+                closeUndocked_avg();
+                return;
+            end
+            p = get(hPlotFig, 'Position');
+            popW = max(700, p(3));
+            popH = p(4);
+            popX = p(1) + 40;
+            popY = p(2) + 20;
+            hUndockedFig_avg = figure('Name', [figName ' - Popout'], 'NumberTitle', 'off', ...
+                'Position', [popX popY popW popH], 'Color', 'k', 'CloseRequestFcn', @closeUndocked_avg);
+            hUndockedAxes_avg = axes('Parent', hUndockedFig_avg, 'Units', 'normalized', 'Position', [0.02 0.02 0.96 0.96]);
+            set(hPopoutBtn_avg, 'String', 'Dock');
+            refreshUndocked_avg();
+            try
+                addlistener(hUndockedAxes_avg, 'XLim', 'PostSet', @(s,e) syncUndockedToMain_avg());
+                addlistener(hUndockedAxes_avg, 'YLim', 'PostSet', @(s,e) syncUndockedToMain_avg());
+            catch
+            end
+        end
+
+        function closeUndocked_avg(varargin)
+            if isscalar(hUndockedFig_avg) && isgraphics(hUndockedFig_avg), delete(hUndockedFig_avg); end
+            hUndockedFig_avg = []; hUndockedAxes_avg = []; hUndockedPlot_avg = [];
+            if isscalar(hPopoutBtn_avg) && isgraphics(hPopoutBtn_avg), set(hPopoutBtn_avg, 'String', 'Popout'); end
+        end
+
+        function refreshUndocked_avg()
+            if ~(isscalar(hUndockedFig_avg) && isgraphics(hUndockedFig_avg)) || ...
+               ~(isscalar(hUndockedAxes_avg) && isgraphics(hUndockedAxes_avg)) || ...
+               ~(isscalar(hPlotObject) && isgraphics(hPlotObject))
+                return;
+            end
+            pType = get(hPlotObject, 'Type');
+            cla(hUndockedAxes_avg);
+            if strcmp(pType, 'image')
+                hUndockedPlot_avg = imagesc(hUndockedAxes_avg, 'XData', get(hPlotObject, 'XData'), 'YData', get(hPlotObject, 'YData'), 'CData', get(hPlotObject, 'CData'));
+            elseif strcmp(pType, 'scatter')
+                hUndockedPlot_avg = scatter(hUndockedAxes_avg, get(hPlotObject, 'XData'), get(hPlotObject, 'YData'), get(hPlotObject, 'SizeData'), get(hPlotObject, 'CData'), 'filled');
+                try, set(hUndockedPlot_avg, 'Marker', get(hPlotObject, 'Marker')); end
+            else
+                return;
+            end
+            colormap(hUndockedAxes_avg, colormap(hAxes));
+            axis(hUndockedAxes_avg, 'equal');
+            set(hUndockedAxes_avg, 'YDir', get(hAxes, 'YDir'), 'XDir', get(hAxes, 'XDir'));
+            syncMainToUndocked_avg();
+        end
+
+        function syncMainToUndocked_avg()
+            if ~(isscalar(hUndockedAxes_avg) && isgraphics(hUndockedAxes_avg)), return; end
+            if isSyncingLimits_avg, return; end
+            isSyncingLimits_avg = true;
+            try
+                set(hUndockedAxes_avg, 'XLim', get(hAxes, 'XLim'), 'YLim', get(hAxes, 'YLim'));
+                set(hUndockedAxes_avg, 'CLim', get(hAxes, 'CLim'));
+                colormap(hUndockedAxes_avg, colormap(hAxes));
+            catch
+            end
+            isSyncingLimits_avg = false;
+        end
+
+        function syncUndockedToMain_avg()
+            if ~(isscalar(hUndockedAxes_avg) && isgraphics(hUndockedAxes_avg)) || ...
+               ~(isscalar(hAxes) && isgraphics(hAxes))
+                return;
+            end
+            if isSyncingLimits_avg, return; end
+            isSyncingLimits_avg = true;
+            try
+                set(hAxes, 'XLim', get(hUndockedAxes_avg, 'XLim'), 'YLim', get(hUndockedAxes_avg, 'YLim'));
+            catch
+            end
+            isSyncingLimits_avg = false;
             syncAxisLimitEditors_avg();
         end
 
@@ -1156,6 +1240,8 @@ updateDisplayMode();
         hPlotObject = []; % This will hold handle to scatter or image
         movieTimer = []; % Handle for the timer object
         currentFrameIdx = 1; % Canonical frame index (avoids relying on slider when popup has focus)
+        hUndockedFig = []; hUndockedAxes = []; hUndockedPlot = [];
+        isSyncingLimits = false;
         hNotesFig = []; % Handle for the notes window
         annotationText = ''; % Variable to hold the notes text
         
@@ -1214,7 +1300,8 @@ updateDisplayMode();
             uicontrol('Parent', axisUiPanel, 'Style', 'text', 'String', 'Y:', 'Units', 'normalized', 'Position', [0.42 0.12 0.04 0.76], 'HorizontalAlignment', 'left');
             hYMinEdit = uicontrol('Parent', axisUiPanel, 'Style', 'edit', 'String', '', 'Units', 'normalized', 'Position', [0.46 0.15 0.15 0.70], 'Callback', @(s,e) applyAxisLimits_movie());
             hYMaxEdit = uicontrol('Parent', axisUiPanel, 'Style', 'edit', 'String', '', 'Units', 'normalized', 'Position', [0.62 0.15 0.15 0.70], 'Callback', @(s,e) applyAxisLimits_movie());
-            hAxisApplyBtn = uicontrol('Parent', axisUiPanel, 'Style', 'pushbutton', 'String', 'Apply', 'Units', 'normalized', 'Position', [0.80 0.15 0.18 0.70], 'Callback', @(s,e) applyAxisLimits_movie());
+            hAxisApplyBtn = uicontrol('Parent', axisUiPanel, 'Style', 'pushbutton', 'String', 'Apply', 'Units', 'normalized', 'Position', [0.78 0.15 0.10 0.70], 'Callback', @(s,e) applyAxisLimits_movie());
+            hPopoutBtn = uicontrol('Parent', axisUiPanel, 'Style', 'pushbutton', 'String', 'Popout', 'Units', 'normalized', 'Position', [0.89 0.15 0.10 0.70], 'Callback', @(s,e) togglePopout_movie());
             
             hSeekSlider = uicontrol(hPlaybackPanel, 'Style', 'slider', 'Min', 1, 'Max', numMovieFrames, 'Value', 1, 'Units', 'normalized', 'Position', [0.04 0.56 0.92 0.34]);
             seekListener = addlistener(hSeekSlider, 'Value', 'PostSet', @(s,e) seekMovie(hSeekSlider));
@@ -1330,6 +1417,7 @@ updateDisplayMode();
             try
                 addlistener(hAxes, 'XLim', 'PostSet', @(s,e) syncAxisLimitEditors_movie());
                 addlistener(hAxes, 'YLim', 'PostSet', @(s,e) syncAxisLimitEditors_movie());
+                addlistener(hAxes, 'CLim', 'PostSet', @(s,e) syncMainToUndocked_movie());
             catch
             end
             try
@@ -1430,6 +1518,7 @@ updateDisplayMode();
             end
             set(hFrameCounter, 'String', sprintf('Frame %d/%d', idx, numMovieFrames));
             updateTraceCursor(idx);
+            refreshUndocked_movie();
             drawnow('update');
             syncAxisLimitEditors_movie();
         end
@@ -1496,6 +1585,7 @@ updateDisplayMode();
             if strcmp(get(hPlayPauseBtn, 'String'), 'Pause')
                 start(movieTimer);
             end
+            refreshUndocked_movie();
             syncAxisLimitEditors_movie();
         end
         
@@ -1670,6 +1760,7 @@ updateDisplayMode();
             if isgraphics(hNotesFig), delete(hNotesFig); end
             if isgraphics(hTracesFig), delete(hTracesFig); end
             if isgraphics(planeContrastPopupFig), close(planeContrastPopupFig); planeContrastPopupFig = []; end
+            if isscalar(hUndockedFig) && isgraphics(hUndockedFig), close(hUndockedFig); hUndockedFig = []; end
             if isgraphics(hMovieFig), delete(hMovieFig); end
         end
 
@@ -1704,6 +1795,7 @@ updateDisplayMode();
             set(hXMaxEdit, 'String', sprintf('%.3f', xl(2)));
             set(hYMinEdit, 'String', sprintf('%.3f', yl(1)));
             set(hYMaxEdit, 'String', sprintf('%.3f', yl(2)));
+            syncMainToUndocked_movie();
         end
 
         function applyAxisLimits_movie()
@@ -1717,6 +1809,93 @@ updateDisplayMode();
                 return;
             end
             xlim(hAxes, [x1 x2]); ylim(hAxes, [y1 y2]);
+            syncAxisLimitEditors_movie();
+        end
+
+        function togglePopout_movie()
+            if isscalar(hUndockedFig) && isgraphics(hUndockedFig)
+                closeUndocked_movie();
+                return;
+            end
+            p = get(hMovieFig, 'Position');
+            popW = max(700, p(3));
+            popH = p(4);
+            popX = p(1) + 40;
+            popY = p(2) + 20;
+            hUndockedFig = figure('Name', 'Movie - Popout', 'NumberTitle', 'off', 'Position', [popX popY popW popH], ...
+                'Color', 'k', 'CloseRequestFcn', @closeUndocked_movie);
+            hUndockedAxes = axes('Parent', hUndockedFig, 'Units', 'normalized', 'Position', [0.02 0.02 0.96 0.96]);
+            set(hPopoutBtn, 'String', 'Dock');
+            refreshUndocked_movie();
+            try
+                addlistener(hUndockedAxes, 'XLim', 'PostSet', @(s,e) syncUndockedToMain_movie());
+                addlistener(hUndockedAxes, 'YLim', 'PostSet', @(s,e) syncUndockedToMain_movie());
+            catch
+            end
+        end
+
+        function closeUndocked_movie(varargin)
+            if isscalar(hUndockedFig) && isgraphics(hUndockedFig), delete(hUndockedFig); end
+            hUndockedFig = []; hUndockedAxes = []; hUndockedPlot = [];
+            if isscalar(hPopoutBtn) && isgraphics(hPopoutBtn), set(hPopoutBtn, 'String', 'Popout'); end
+        end
+
+        function refreshUndocked_movie()
+            if ~(isscalar(hUndockedFig) && isgraphics(hUndockedFig)) || ...
+               ~(isscalar(hUndockedAxes) && isgraphics(hUndockedAxes)) || ...
+               ~(isscalar(hPlotObject) && isgraphics(hPlotObject))
+                return;
+            end
+            pType = get(hPlotObject, 'Type');
+            if strcmp(pType, 'image')
+                if ~(isscalar(hUndockedPlot) && isgraphics(hUndockedPlot) && strcmp(get(hUndockedPlot, 'Type'), 'image'))
+                    cla(hUndockedAxes);
+                    hUndockedPlot = imagesc(hUndockedAxes, 'XData', get(hPlotObject, 'XData'), 'YData', get(hPlotObject, 'YData'), 'CData', get(hPlotObject, 'CData'));
+                else
+                    set(hUndockedPlot, 'XData', get(hPlotObject, 'XData'), 'YData', get(hPlotObject, 'YData'), 'CData', get(hPlotObject, 'CData'));
+                end
+            elseif strcmp(pType, 'scatter')
+                if ~(isscalar(hUndockedPlot) && isgraphics(hUndockedPlot) && strcmp(get(hUndockedPlot, 'Type'), 'scatter'))
+                    cla(hUndockedAxes);
+                    hUndockedPlot = scatter(hUndockedAxes, get(hPlotObject, 'XData'), get(hPlotObject, 'YData'), get(hPlotObject, 'SizeData'), get(hPlotObject, 'CData'), 'filled');
+                else
+                    set(hUndockedPlot, 'XData', get(hPlotObject, 'XData'), 'YData', get(hPlotObject, 'YData'), 'SizeData', get(hPlotObject, 'SizeData'), 'CData', get(hPlotObject, 'CData'));
+                end
+                try, set(hUndockedPlot, 'Marker', get(hPlotObject, 'Marker')); end
+            else
+                return;
+            end
+            colormap(hUndockedAxes, colormap(hAxes));
+            axis(hUndockedAxes, 'equal');
+            set(hUndockedAxes, 'YDir', get(hAxes, 'YDir'), 'XDir', get(hAxes, 'XDir'));
+            syncMainToUndocked_movie();
+        end
+
+        function syncMainToUndocked_movie()
+            if ~(isscalar(hUndockedAxes) && isgraphics(hUndockedAxes)), return; end
+            if isSyncingLimits, return; end
+            isSyncingLimits = true;
+            try
+                set(hUndockedAxes, 'XLim', get(hAxes, 'XLim'), 'YLim', get(hAxes, 'YLim'));
+                set(hUndockedAxes, 'CLim', get(hAxes, 'CLim'));
+                colormap(hUndockedAxes, colormap(hAxes));
+            catch
+            end
+            isSyncingLimits = false;
+        end
+
+        function syncUndockedToMain_movie()
+            if ~(isscalar(hUndockedAxes) && isgraphics(hUndockedAxes)) || ...
+               ~(isscalar(hAxes) && isgraphics(hAxes))
+                return;
+            end
+            if isSyncingLimits, return; end
+            isSyncingLimits = true;
+            try
+                set(hAxes, 'XLim', get(hUndockedAxes, 'XLim'), 'YLim', get(hUndockedAxes, 'YLim'));
+            catch
+            end
+            isSyncingLimits = false;
             syncAxisLimitEditors_movie();
         end
         
