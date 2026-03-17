@@ -34,7 +34,8 @@ appState.currentMode = 'TIFF'; % 'TIFF' or 'Neural'
 appState.TIFF = struct('fullFilePath','','selectedFolderPath','','fileBaseName','',...
     'isFolderMode',false,'roiData',[],'metadataString','','dataAspectRatio',[1 1 1],...
     'x_pixels_per_unit',1,'y_pixels_per_unit',1,'parsedNumPlanes',0,...
-    'parsedNumChannels',0, 'nativeFrameRate', 30, 'pixelWidth', 512, 'pixelHeight', 512);
+    'parsedNumChannels',0, 'nativeFrameRate', 30, 'pixelWidth', 512, 'pixelHeight', 512, ...
+    'folderFileCount', 0);
 appState.Neural = struct('dataFilePath','','coordsFilePath','','tiffFolderPath','',...
     'vareaFilePath','','psthsData',[],'psthsnpData',[],'cellCoords',[],'vareaData',[],...
     'numNeurons',0,'numTimepoints',0,'numTrials',0,'metadataString','',...
@@ -92,7 +93,7 @@ uicontrol('Parent', hTiffLoadPanel, 'Style', 'pushbutton', 'String', 'Load Areas
     'Position', [200 40 90 30], 'FontSize', 10, 'Callback', @loadVareaCallback);
 uicontrol('Parent', hTiffLoadPanel, 'Style', 'pushbutton', 'String', 'Load State / Movie', ...
     'Position', [295 40 125 30], 'FontSize', 10, 'Callback', @loadStateCallback);
-hReloadDataCheckbox_Tiff = uicontrol('Parent', hTiffLoadPanel, 'Style', 'checkbox', 'String', 'Reload raw data from paths', ...
+hReloadDataCheckbox_Tiff = uicontrol('Parent', hTiffLoadPanel, 'Style', 'checkbox', 'String', 'Reload raw data', ...
     'Position', [295 10 130 20], 'Value', 0, 'BackgroundColor', [0.94 0.94 0.94]);
 
 hNeuralLoadPanel = uipanel('Parent', hFig, 'Title', 'Processed Neural Data Loading', ...
@@ -134,14 +135,14 @@ hDetrendCheckbox = uicontrol('Parent', hProcessingPanel, 'Style', 'checkbox', 'S
 hDetrendWindowLabel = uicontrol('Parent', hProcessingPanel, 'Style', 'text', 'String', 'Win (min):', 'Position', [80 116 60 20], 'HorizontalAlignment', 'right', 'BackgroundColor', [0.94 0.94 0.94], 'Visible', 'off');
 hDetrendWindowInput = uicontrol('Parent', hProcessingPanel, 'Style', 'edit', 'String', '1', 'Position', [145 120 30 20], 'Visible', 'off');
 hForcePositiveCheckbox = uicontrol('Parent', hProcessingPanel, 'Style', 'checkbox', 'String', 'Force Positive F', 'Position', [190 120 150 20], 'Value', 1, 'BackgroundColor', [0.94 0.94 0.94], 'Visible', 'off');
-hSmoothingLabel = uicontrol('Parent', hProcessingPanel, 'Style', 'text', 'String', 'Smoothing (µm):', 'Position', [280 120 80 20], 'HorizontalAlignment', 'right', 'BackgroundColor', [0.94 0.94 0.94]);
+hSmoothingLabel = uicontrol('Parent', hProcessingPanel, 'Style', 'text', 'String', ['Smoothing (' char(956) 'm):'], 'FontSize',8, 'Position', [280 120 80 20], 'HorizontalAlignment', 'right', 'BackgroundColor', [0.94 0.94 0.94]);
 hSmoothingWindowInput = uicontrol('Parent', hProcessingPanel, 'Style', 'edit', 'String', '0', 'Position', [370 120 40 20]);
 % Line 3
 uicontrol('Parent', hProcessingPanel, 'Style', 'text', 'String', 'Trials:', 'Position', [20 90 50 20], 'HorizontalAlignment', 'right', 'BackgroundColor', [0.94 0.94 0.94]);
 hTrialInput = uicontrol('Parent', hProcessingPanel, 'Style', 'edit', 'String', ':', 'Position', [80 90 205 20]);
 uicontrol('Parent', hProcessingPanel, 'Style', 'pushbutton', 'String', '+', 'Position', [290 90 20 20], 'FontSize', 8, 'Callback', @(~,~) openMultiLineEditor(hTrialInput, 'Trial Selection'));
 % TIFF: optional frame cap for faster iteration
-hMaxFramesLabel = uicontrol('Parent', hProcessingPanel, 'Style', 'text', 'String', 'Max Frames:', 'Position', [320 90 60 20], 'HorizontalAlignment', 'right', 'BackgroundColor', [0.94 0.94 0.94]);
+hMaxFramesLabel = uicontrol('Parent', hProcessingPanel, 'Style', 'text', 'String', 'Max Frames:', 'FontSize',7, 'Position', [320 90 60 20], 'HorizontalAlignment', 'right', 'BackgroundColor', [0.94 0.94 0.94]);
 hMaxFramesInput = uicontrol('Parent', hProcessingPanel, 'Style', 'edit', 'String', '', 'Position', [385 90 40 20]);
 % Line 4
 uicontrol('Parent', hProcessingPanel, 'Style', 'text', 'String', 'Display Mode:', 'Position', [0 60 70 20], 'HorizontalAlignment', 'right', 'BackgroundColor', [0.94 0.94 0.94]);
@@ -257,14 +258,9 @@ updateDisplayMode();
             catch
                 % Non-fatal context refresh errors should not block using the loaded state
             end
-            set(hText, 'String', sprintf('State loaded:\n%s', loadPath));
 
         catch ME
-            if ~isempty(appState.loadedStateSnapshot)
-                set(hText, 'String', sprintf('State loaded:\n%s', loadPath));
-            else
-                set(hText, 'String', sprintf('Error loading state file:\n%s', ME.message));
-            end
+            set(hText, 'String', sprintf('Error loading state file:\n%s', ME.message));
         end
     end
 
@@ -366,6 +362,14 @@ updateDisplayMode();
             
             displayHandles = createDisplayModeControls(hPlotFig, [0.1 0.16 0.8 0.05]);
             markerHandles = createMarkerControls(hPlotFig, [0.1 0.1 0.8 0.05]);
+            axisUiPanel = uipanel('Parent', hPlotFig, 'Title', 'View Limits', 'Units', 'normalized', 'Position', [0.1 0.31 0.8 0.035]);
+            uicontrol('Parent', axisUiPanel, 'Style', 'text', 'String', 'X:', 'Units', 'normalized', 'Position', [0.02 0.12 0.04 0.76], 'HorizontalAlignment', 'left');
+            hXMinEdit_avg = uicontrol('Parent', axisUiPanel, 'Style', 'edit', 'String', '', 'Units', 'normalized', 'Position', [0.06 0.15 0.15 0.70], 'Callback', @(s,e) applyAxisLimits_avg());
+            hXMaxEdit_avg = uicontrol('Parent', axisUiPanel, 'Style', 'edit', 'String', '', 'Units', 'normalized', 'Position', [0.22 0.15 0.15 0.70], 'Callback', @(s,e) applyAxisLimits_avg());
+            uicontrol('Parent', axisUiPanel, 'Style', 'text', 'String', 'Y:', 'Units', 'normalized', 'Position', [0.42 0.12 0.04 0.76], 'HorizontalAlignment', 'left');
+            hYMinEdit_avg = uicontrol('Parent', axisUiPanel, 'Style', 'edit', 'String', '', 'Units', 'normalized', 'Position', [0.46 0.15 0.15 0.70], 'Callback', @(s,e) applyAxisLimits_avg());
+            hYMaxEdit_avg = uicontrol('Parent', axisUiPanel, 'Style', 'edit', 'String', '', 'Units', 'normalized', 'Position', [0.62 0.15 0.15 0.70], 'Callback', @(s,e) applyAxisLimits_avg());
+            hAxisApplyBtn_avg = uicontrol('Parent', axisUiPanel, 'Style', 'pushbutton', 'String', 'Apply', 'Units', 'normalized', 'Position', [0.80 0.15 0.18 0.70], 'Callback', @(s,e) applyAxisLimits_avg());
             
             modeContrasts = struct();
             p_base = prctile(localState.avgData(:), [2 98]);
@@ -415,8 +419,8 @@ updateDisplayMode();
                     if pr(1) >= pr(2), pr = [0 1]; end
                     planeContrastLimits_avg(p,:) = pr(:)';
                 end
-                hPlaneFalseColorCheckbox_avg = uicontrol('Parent', hPlotFig, 'Style', 'checkbox', 'String', 'Multicolor', ...
-                    'Value', 0, 'Units', 'normalized', 'Position', [0.905 0.165 0.09 0.025], 'Callback', @(s,e) planeFalseColorToggled_avg(), 'BackgroundColor', get(hPlotFig, 'Color'));
+                hPlaneFalseColorCheckbox_avg = uicontrol('Parent', contrastHandles.panel, 'Style', 'checkbox', 'String', 'Multicolor', ...
+                    'Value', 0, 'Units', 'normalized', 'Position', [0.80 0.10 0.19 0.30], 'Callback', @(s,e) planeFalseColorToggled_avg(), 'BackgroundColor', get(contrastHandles.panel, 'BackgroundColor'));
             end
             hPlotObject = []; 
             
@@ -439,6 +443,17 @@ updateDisplayMode();
             set(displayHandles.interpolateCheckbox, 'Callback', @(s,e) displayModeChanged_static());
             
             displayModeChanged_static(); % This calls resetSliders
+            syncAxisLimitEditors_avg();
+            try
+                addlistener(hAxes, 'XLim', 'PostSet', @(s,e) syncAxisLimitEditors_avg());
+                addlistener(hAxes, 'YLim', 'PostSet', @(s,e) syncAxisLimitEditors_avg());
+            catch
+            end
+            try
+                zObj = zoom(hPlotFig); set(zObj, 'ActionPostCallback', @(s,e) syncAxisLimitEditors_avg());
+                pObj = pan(hPlotFig);  set(pObj, 'ActionPostCallback', @(s,e) syncAxisLimitEditors_avg());
+            catch
+            end
             if isMergeAvg && isfield(contrastHandles, 'applyMergeImage')
                 contrastHandles.applyMergeImage();
             end
@@ -524,6 +539,30 @@ updateDisplayMode();
             if isTiffMode, set(hAxes, 'YDir', 'normal'); end
             if ~isempty(vareaHandles), vareaHandles.updateAll(); end
             contrastHandles.reapplyColormap();
+            syncAxisLimitEditors_avg();
+        end
+
+        function syncAxisLimitEditors_avg()
+            if ~isgraphics(hAxes), return; end
+            xl = get(hAxes, 'XLim'); yl = get(hAxes, 'YLim');
+            set(hXMinEdit_avg, 'String', sprintf('%.3f', xl(1)));
+            set(hXMaxEdit_avg, 'String', sprintf('%.3f', xl(2)));
+            set(hYMinEdit_avg, 'String', sprintf('%.3f', yl(1)));
+            set(hYMaxEdit_avg, 'String', sprintf('%.3f', yl(2)));
+        end
+
+        function applyAxisLimits_avg()
+            if ~isgraphics(hAxes), return; end
+            x1 = str2double(get(hXMinEdit_avg, 'String'));
+            x2 = str2double(get(hXMaxEdit_avg, 'String'));
+            y1 = str2double(get(hYMinEdit_avg, 'String'));
+            y2 = str2double(get(hYMaxEdit_avg, 'String'));
+            if any(isnan([x1 x2 y1 y2])) || x2 <= x1 || y2 <= y1
+                syncAxisLimitEditors_avg();
+                return;
+            end
+            xlim(hAxes, [x1 x2]); ylim(hAxes, [y1 y2]);
+            syncAxisLimitEditors_avg();
         end
 
         function rgb = buildPlaneFalseColorFrame_avg(avgP, limits, palette)
@@ -857,6 +896,7 @@ updateDisplayMode();
         T.isFolderMode = false;
         T.fullFilePath = fullfile(pathName, fileName);
         T.selectedFolderPath = '';
+        T.folderFileCount = 0;
         appState.loadedMovieData = []; appState.loadedPlayerState = [];
         appState.sessionCache = struct('data', [], 'fingerprint', []); % Invalidate cache
         appState.TIFF = T;
@@ -865,8 +905,8 @@ updateDisplayMode();
         try
             processMetadata_TIFF(T.fullFilePath, fileName);
             appendToStatus(sprintf('TIFF file loaded: %s', T.fullFilePath));
-        catch
-            set(hText, 'String', sprintf('TIFF file loaded.\n%s', T.fullFilePath));
+        catch ME
+            set(hText, 'String', sprintf('Error reading file:\n%s\n\nDetails:\n%s', T.fullFilePath, ME.message));
         end
     end
 
@@ -878,6 +918,7 @@ updateDisplayMode();
         T.isFolderMode = true;
         T.selectedFolderPath = folderName;
         T.fullFilePath = '';
+        T.folderFileCount = 0;
         appState.loadedMovieData = []; appState.loadedPlayerState = [];
         appState.sessionCache = struct('data', [], 'fingerprint', []); % Invalidate cache
         
@@ -889,12 +930,13 @@ updateDisplayMode();
             firstFilePath = fullfile(T.selectedFolderPath, tiffFiles(1).name);
             [~, name, ~] = fileparts(tiffFiles(1).name);
             T.fileBaseName = regexprep(name, '_\d{5}$', '');
+            T.folderFileCount = numel(tiffFiles);
             appState.TIFF = T;
             
             processMetadata_TIFF(firstFilePath, folderName);
             appendToStatus(sprintf('TIFF folder loaded: %s', folderName));
-        catch
-            set(hText, 'String', sprintf('TIFF folder loaded.\n%s', T.selectedFolderPath));
+        catch ME
+            set(hText, 'String', sprintf('Error reading folder:\n%s\n\nDetails:\n%s', T.selectedFolderPath, ME.message));
         end
     end
 
@@ -1165,18 +1207,26 @@ updateDisplayMode();
 
             hPlaybackPanel = uipanel('Parent', hMovieFig, 'Title', 'Playback', 'Units', 'normalized', 'Position', [0.1 0.21 0.8 0.1]);
             displayHandles = createDisplayModeControls(hMovieFig, [0.1 0.16 0.8 0.05]);
+            axisUiPanel = uipanel('Parent', hMovieFig, 'Title', 'View Limits', 'Units', 'normalized', 'Position', [0.1 0.31 0.8 0.035]);
+            uicontrol('Parent', axisUiPanel, 'Style', 'text', 'String', 'X:', 'Units', 'normalized', 'Position', [0.02 0.12 0.04 0.76], 'HorizontalAlignment', 'left');
+            hXMinEdit = uicontrol('Parent', axisUiPanel, 'Style', 'edit', 'String', '', 'Units', 'normalized', 'Position', [0.06 0.15 0.15 0.70], 'Callback', @(s,e) applyAxisLimits_movie());
+            hXMaxEdit = uicontrol('Parent', axisUiPanel, 'Style', 'edit', 'String', '', 'Units', 'normalized', 'Position', [0.22 0.15 0.15 0.70], 'Callback', @(s,e) applyAxisLimits_movie());
+            uicontrol('Parent', axisUiPanel, 'Style', 'text', 'String', 'Y:', 'Units', 'normalized', 'Position', [0.42 0.12 0.04 0.76], 'HorizontalAlignment', 'left');
+            hYMinEdit = uicontrol('Parent', axisUiPanel, 'Style', 'edit', 'String', '', 'Units', 'normalized', 'Position', [0.46 0.15 0.15 0.70], 'Callback', @(s,e) applyAxisLimits_movie());
+            hYMaxEdit = uicontrol('Parent', axisUiPanel, 'Style', 'edit', 'String', '', 'Units', 'normalized', 'Position', [0.62 0.15 0.15 0.70], 'Callback', @(s,e) applyAxisLimits_movie());
+            hAxisApplyBtn = uicontrol('Parent', axisUiPanel, 'Style', 'pushbutton', 'String', 'Apply', 'Units', 'normalized', 'Position', [0.80 0.15 0.18 0.70], 'Callback', @(s,e) applyAxisLimits_movie());
             
-            hSeekSlider = uicontrol(hPlaybackPanel, 'Style', 'slider', 'Min', 1, 'Max', numMovieFrames, 'Value', 1, 'Units', 'normalized', 'Position', [0.05 0.55 0.9 0.4]);
+            hSeekSlider = uicontrol(hPlaybackPanel, 'Style', 'slider', 'Min', 1, 'Max', numMovieFrames, 'Value', 1, 'Units', 'normalized', 'Position', [0.04 0.56 0.92 0.34]);
             seekListener = addlistener(hSeekSlider, 'Value', 'PostSet', @(s,e) seekMovie(hSeekSlider));
             
-            hPlayPauseBtn = uicontrol(hPlaybackPanel, 'Style', 'pushbutton', 'String', 'Pause', 'Units', 'normalized', 'Position', [0.02 0.05 0.12 0.4], 'Callback', @togglePlay, 'FontSize', 9);
-            uicontrol(hPlaybackPanel, 'Style', 'pushbutton', 'String', 'Stop', 'Units', 'normalized', 'Position', [0.15 0.05 0.12 0.4], 'Callback', @(s,e) stopMovie(), 'FontSize', 9);
-            hFrameCounter = uicontrol(hPlaybackPanel, 'Style', 'text', 'String', 'Frame 1/X', 'Units', 'normalized', 'Position', [0.28 0.05 0.15 0.4], 'FontSize', 9);
-            uicontrol(hPlaybackPanel, 'Style', 'text', 'String', 'Speed:', 'Units', 'normalized', 'Position', [0.44 0.05 0.1 0.4], 'HorizontalAlignment', 'right', 'FontSize', 9);
-            hMovieSpeedDropdown = uicontrol('Parent', hPlaybackPanel, 'Style', 'popupmenu', 'String', {'0.5x', '1x', '2x', '4x', '8x', '16x'}, 'Value', 2, 'Units', 'normalized', 'Position', [0.55 0.05 0.15 0.4], 'Callback', @updateSpeed, 'FontSize', 9);
-            uicontrol(hPlaybackPanel, 'Style', 'pushbutton', 'String', 'Notes', 'Units', 'normalized', 'Position', [0.68 0.05 0.10 0.4], 'Callback', @openNotesWindow, 'FontSize', 9);
-            uicontrol(hPlaybackPanel, 'Style', 'pushbutton', 'String', 'Save...', 'Units', 'normalized', 'Position', [0.80 0.05 0.10 0.4], 'Callback', @saveMovie, 'FontSize', 9);
-            uicontrol(hPlaybackPanel, 'Style', 'pushbutton', 'String', 'Traces', 'Units', 'normalized', 'Position', [0.92 0.05 0.06 0.4], 'Callback', @openTracesWindow, 'FontSize', 9);
+            hPlayPauseBtn = uicontrol(hPlaybackPanel, 'Style', 'pushbutton', 'String', 'Pause', 'Units', 'normalized', 'Position', [0.02 0.08 0.10 0.34], 'Callback', @togglePlay, 'FontSize', 9);
+            uicontrol(hPlaybackPanel, 'Style', 'pushbutton', 'String', 'Stop', 'Units', 'normalized', 'Position', [0.13 0.08 0.10 0.34], 'Callback', @(s,e) stopMovie(), 'FontSize', 9);
+            hFrameCounter = uicontrol(hPlaybackPanel, 'Style', 'text', 'String', 'Frame 1/X', 'Units', 'normalized', 'Position', [0.24 0.08 0.2 0.34], 'FontSize', 9);
+            uicontrol(hPlaybackPanel, 'Style', 'text', 'String', 'Speed:', 'Units', 'normalized', 'Position', [0.46 0.06 0.08 0.34], 'HorizontalAlignment', 'right', 'FontSize', 9);
+            hMovieSpeedDropdown = uicontrol('Parent', hPlaybackPanel, 'Style', 'popupmenu', 'String', {'0.5x', '1x', '2x', '4x', '8x', '16x'}, 'Value', 2, 'Units', 'normalized', 'Position', [0.55 0.08 0.08 0.34], 'Callback', @updateSpeed, 'FontSize', 9);
+            uicontrol(hPlaybackPanel, 'Style', 'pushbutton', 'String', 'Notes', 'Units', 'normalized', 'Position', [0.65 0.08 0.11 0.34], 'Callback', @openNotesWindow, 'FontSize', 9);
+            uicontrol(hPlaybackPanel, 'Style', 'pushbutton', 'String', 'Save..', 'Units', 'normalized', 'Position', [0.77 0.08 0.11 0.34], 'Callback', @saveMovie, 'FontSize', 9);
+            uicontrol(hPlaybackPanel, 'Style', 'pushbutton', 'String', 'Traces', 'Units', 'normalized', 'Position', [0.89 0.08 0.10 0.34], 'Callback', @openTracesWindow, 'FontSize', 8.5);
 
             % Setup display mode options based on available data
             tiffModes = {'Image', 'Grid'};
@@ -1220,9 +1270,6 @@ updateDisplayMode();
                 modeContrasts.Areas = p_area;
             end
 
-            hPlaneFalseColorCheckbox = uicontrol('Parent', hMovieFig, 'Style', 'checkbox', 'String', 'Multicolor', ...
-                'Value', 0, 'Units', 'normalized', 'Position', [0.905 0.165 0.09 0.025], 'Visible', ifelse(isMultiPlaneMovie, 'on', 'off'), ...
-                'Callback', @(s,e) planeFalseColorToggled(), 'BackgroundColor', get(hMovieFig, 'Color'));
             planeContrastPopupFig = [];
             planeContrastLimits = [];
             planePalette = [];
@@ -1238,6 +1285,9 @@ updateDisplayMode();
             end
 
             contrastHandles = createContrastControls(hMovieFig, hAxes, [0.1 0.01 0.8 0.09], modeContrasts, displayHandles);
+            hPlaneFalseColorCheckbox = uicontrol('Parent', contrastHandles.panel, 'Style', 'checkbox', 'String', 'Multicolor', ...
+                'Value', 0, 'Units', 'normalized', 'Position', [0.80 0.10 0.19 0.30], 'Visible', ifelse(isMultiPlaneMovie, 'on', 'off'), ...
+                'Callback', @(s,e) planeFalseColorToggled(), 'BackgroundColor', get(contrastHandles.panel, 'BackgroundColor'));
             markerHandles = createMarkerControls(hMovieFig, [0.1 0.10 0.8 0.05]);
             
             set(displayHandles.modeDropdown, 'Callback', @(s,e) displayModeChanged());
@@ -1276,6 +1326,17 @@ updateDisplayMode();
             end
             
             displayModeChanged(); % Initial draw, will use loaded state settings if available
+            syncAxisLimitEditors_movie();
+            try
+                addlistener(hAxes, 'XLim', 'PostSet', @(s,e) syncAxisLimitEditors_movie());
+                addlistener(hAxes, 'YLim', 'PostSet', @(s,e) syncAxisLimitEditors_movie());
+            catch
+            end
+            try
+                zObj = zoom(hMovieFig); set(zObj, 'ActionPostCallback', @(s,e) syncAxisLimitEditors_movie());
+                pObj = pan(hMovieFig);  set(pObj, 'ActionPostCallback', @(s,e) syncAxisLimitEditors_movie());
+            catch
+            end
             updateSpeed(); % Sets timer period
 
             if ~isempty(vareaHandles), vareaHandles.updateAll(); end
@@ -1370,6 +1431,7 @@ updateDisplayMode();
             set(hFrameCounter, 'String', sprintf('Frame %d/%d', idx, numMovieFrames));
             updateTraceCursor(idx);
             drawnow('update');
+            syncAxisLimitEditors_movie();
         end
 
         function displayModeChanged()
@@ -1434,6 +1496,7 @@ updateDisplayMode();
             if strcmp(get(hPlayPauseBtn, 'String'), 'Pause')
                 start(movieTimer);
             end
+            syncAxisLimitEditors_movie();
         end
         
         function data = getModeDataForFrame(idx, modeOverride)
@@ -1632,6 +1695,29 @@ updateDisplayMode();
             set(movieTimer, 'Period', newFrameDelay);
             
             if wasRunning, start(movieTimer); end
+        end
+
+        function syncAxisLimitEditors_movie()
+            if ~isgraphics(hAxes), return; end
+            xl = get(hAxes, 'XLim'); yl = get(hAxes, 'YLim');
+            set(hXMinEdit, 'String', sprintf('%.3f', xl(1)));
+            set(hXMaxEdit, 'String', sprintf('%.3f', xl(2)));
+            set(hYMinEdit, 'String', sprintf('%.3f', yl(1)));
+            set(hYMaxEdit, 'String', sprintf('%.3f', yl(2)));
+        end
+
+        function applyAxisLimits_movie()
+            if ~isgraphics(hAxes), return; end
+            x1 = str2double(get(hXMinEdit, 'String'));
+            x2 = str2double(get(hXMaxEdit, 'String'));
+            y1 = str2double(get(hYMinEdit, 'String'));
+            y2 = str2double(get(hYMaxEdit, 'String'));
+            if any(isnan([x1 x2 y1 y2])) || x2 <= x1 || y2 <= y1
+                syncAxisLimitEditors_movie();
+                return;
+            end
+            xlim(hAxes, [x1 x2]); ylim(hAxes, [y1 y2]);
+            syncAxisLimitEditors_movie();
         end
         
         function saveMovie(~,~)
@@ -2659,8 +2745,29 @@ updateDisplayMode();
     
     function appendToStatus(newText)
         oldText = get(hText, 'String');
-        if ~iscell(oldText), oldText = {oldText}; end
-        if contains(oldText{1}, 'Welcome!'), oldText = {}; end
+        % Normalize GUI text across MATLAB versions:
+        % - char row vector
+        % - char matrix (multi-line)
+        % - string scalar/array
+        % - cell array of char
+        if isstring(oldText)
+            oldText = cellstr(oldText);
+        elseif ischar(oldText)
+            oldText = cellstr(oldText);
+        elseif ~iscell(oldText)
+            oldText = {char(string(oldText))};
+        end
+        if isempty(oldText)
+            oldText = {};
+        end
+        firstLine = '';
+        if ~isempty(oldText) && ~isempty(oldText{1})
+            firstLine = oldText{1};
+            if ~ischar(firstLine), firstLine = char(string(firstLine)); end
+        end
+        if ~isempty(strfind(firstLine, 'Welcome!')) %#ok<STREMP>
+            oldText = {};
+        end
         % Prepend latest status to the top; metadata appenders will still set full text when needed
         set(hText, 'String', [{newText}; oldText]);
         drawnow;
@@ -2691,15 +2798,13 @@ updateDisplayMode();
               physH_um = T_state.pixelHeight / T_state.y_pixels_per_unit;
               xlim(hAxes, [0 physW_um]); 
               ylim(hAxes, [0 physH_um]);
-              set(hAxes, 'XTick', 0:1000:physW_um);
-              set(hAxes, 'YTick', 0:1000:physH_um);
         else % Neural
             xlim(hAxes, N_state.plotXLim); 
             ylim(hAxes, N_state.plotYLim);
             set(hAxes, 'YDir', 'normal');
-            set(hAxes, 'XTick', 0:1000:N_state.plotXLim(2));
-            set(hAxes, 'YTick', 0:1000:N_state.plotYLim(2));
         end
+        % Let MATLAB repopulate sensible ticks at any zoom level.
+        set(hAxes, 'XTickMode', 'auto', 'YTickMode', 'auto');
         xlabel(hAxes, 'X Position (\mum)'); 
         ylabel(hAxes, 'Y Position (\mum)');
     end
@@ -2797,6 +2902,11 @@ updateDisplayMode();
             
             T.parsedNumPlanes = str2double(numPlanes);
             T.parsedNumChannels = str2double(numChannels);
+            nTotalFrames = numel(info);
+            nPlanesSafe = max(1, T.parsedNumPlanes);
+            nChannelsSafe = max(1, T.parsedNumChannels);
+            nVolumes = nTotalFrames / (nPlanesSafe * nChannelsSafe);
+            nFramesPerChannel = nTotalFrames / nChannelsSafe;
             planeStrs = arrayfun(@num2str, 1:T.parsedNumPlanes, 'UniformOutput', false);
             if T.parsedNumPlanes >= 2
                 planeStrs{end+1} = 'All';
@@ -2809,22 +2919,29 @@ updateDisplayMode();
             set(hChannelDropdown, 'String', chanStrs, 'Value', 1);
             
             header_text = ifelse(T.isFolderMode, ' Folder: ', ' File: ');
+            folderCountLine = '';
+            if T.isFolderMode && isfield(T, 'folderFileCount') && T.folderFileCount > 0
+                folderCountLine = sprintf('  Number of Files in Folder: %d\n', T.folderFileCount);
+            end
             
             T.metadataString = sprintf([...
                 '%s%s\n' ...
                 '------------------------------------------\n\n' ...
                 'GENERAL INFO (from first file)\n' ...
+                '%s' ...
                 '  Dimensions (WxH): %d x %d\n' ...
                 '  Stitched Dimensions (WxH): %s\n' ...
                 '  Physical Size: %s\n' ...
-                '  Number of Frames (Total): %d\n\n' ...
+                '  Number of Frames (Total): %.0f\n' ...
+                '  Number of Frames per Plane (Volumes): %.0f\n' ...
+                '  Number of Frames per Channel: %.0f\n\n' ...
                 'SCANIMAGE INFO\n' ...
                 '  Volume Rate (Hz): %s\n' ...
                 '  Number of Planes: %s\n' ...
                 '  Number of Channels: %s\n' ...
                 '  Number of ROIs: %s\n'], ...
-                header_text, displayName, info(1).Width, info(1).Height, trueDimStr, ...
-                physicalDimStr, numel(info), frameRateStr, numPlanes, numChannels, numRois);
+                header_text, displayName, folderCountLine, info(1).Width, info(1).Height, trueDimStr, ...
+                physicalDimStr, nTotalFrames, nVolumes, nFramesPerChannel, frameRateStr, numPlanes, numChannels, numRois);
             
             appState.TIFF = T;
             set(hText, 'String', T.metadataString);
@@ -2837,7 +2954,38 @@ updateDisplayMode();
                 T.x_pixels_per_unit = 1; T.y_pixels_per_unit = 1;
                 T.parsedNumPlanes = 1;
                 T.parsedNumChannels = 1;
+                nTotalFrames = numel(info);
+                nVolumes = nTotalFrames;
+                nFramesPerChannel = nTotalFrames;
+                planeStrs = {'1'};
+                chanStrs = {'1'};
+                set(hPlaneDropdown, 'String', planeStrs, 'Value', 1);
+                set(hChannelDropdown, 'String', chanStrs, 'Value', 1);
+                header_text = ifelse(T.isFolderMode, ' Folder: ', ' File: ');
+                folderCountLine = '';
+                if T.isFolderMode && isfield(T, 'folderFileCount') && T.folderFileCount > 0
+                    folderCountLine = sprintf('  Number of Files in Folder: %d\n', T.folderFileCount);
+                end
+                T.metadataString = sprintf([...
+                    '%s%s\n' ...
+                    '------------------------------------------\n\n' ...
+                    'GENERAL INFO (from first file)\n' ...
+                    '%s' ...
+                    '  Dimensions (WxH): %d x %d\n' ...
+                    '  Stitched Dimensions (WxH): %d x %d px\n' ...
+                    '  Physical Size: %.2f x %.2f mm\n' ...
+                    '  Number of Frames (Total): %.0f\n' ...
+                    '  Number of Frames per Plane (Volumes): %.0f\n' ...
+                    '  Number of Frames per Channel: %.0f\n\n' ...
+                    'SCANIMAGE INFO\n' ...
+                    '  Volume Rate (Hz): %s\n' ...
+                    '  Number of Planes: %d\n' ...
+                    '  Number of Channels: %d\n' ...
+                    '  Number of ROIs: %s\n'], ...
+                    header_text, displayName, folderCountLine, info(1).Width, info(1).Height, pxW, pxH, ...
+                    pxW, pxH, nTotalFrames, nVolumes, nFramesPerChannel, 'N/A', T.parsedNumPlanes, T.parsedNumChannels, 'N/A');
                 appState.TIFF = T;
+                set(hText, 'String', T.metadataString);
             catch
                 % If even imfinfo fails, leave T as-is and let caller report a generic error
             end
@@ -3364,11 +3512,11 @@ updateDisplayMode();
 %% --- UI COMPONENT BUILDERS ---
     function handles = createDisplayModeControls(hParent, panelPosition)
         hPanel = uipanel('Parent', hParent, 'Title', 'Display Mode', 'Units', 'normalized', 'Position', panelPosition);
-        uicontrol('Parent', hPanel, 'Style', 'text', 'String', 'Mode:', 'Units', 'normalized', 'Position', [0.05 0.1 0.1 0.8]);
-        hModeDropdown = uicontrol('Parent', hPanel, 'Style', 'popupmenu', 'String', {'-'}, 'Units', 'normalized', 'Position', [0.15 0.1 0.25 0.8]);
-        hGridLabel = uicontrol('Parent', hPanel, 'Style', 'text', 'String', 'Grid Size:', 'Units', 'normalized', 'Position', [0.42 0.1 0.18 0.8], 'Visible', 'off');
-        hGridEdit = uicontrol('Parent', hPanel, 'Style', 'edit', 'String', '30', 'Units', 'normalized', 'Position', [0.6 0.1 0.1 0.8], 'Visible', 'off');
-        hInterpolateCheckbox = uicontrol('Parent', hPanel, 'Style', 'checkbox', 'String', 'Interpolate', 'Value', 1, 'Units', 'normalized', 'Position', [0.72 0.1 0.28 0.8], 'Visible', 'off');
+        uicontrol('Parent', hPanel, 'Style', 'text', 'String', 'Mode:', 'Units', 'normalized', 'Position', [0.03 0.12 0.10 0.76]);
+        hModeDropdown = uicontrol('Parent', hPanel, 'Style', 'popupmenu', 'String', {'-'}, 'Units', 'normalized', 'Position', [0.14 0.12 0.28 0.76]);
+        hGridLabel = uicontrol('Parent', hPanel, 'Style', 'text', 'String', 'Grid Size:', 'Units', 'normalized', 'Position', [0.44 0.12 0.16 0.76], 'Visible', 'off');
+        hGridEdit = uicontrol('Parent', hPanel, 'Style', 'edit', 'String', '30', 'Units', 'normalized', 'Position', [0.61 0.12 0.10 0.76], 'Visible', 'off');
+        hInterpolateCheckbox = uicontrol('Parent', hPanel, 'Style', 'checkbox', 'String', 'Interpolate', 'Value', 1, 'Units', 'normalized', 'Position', [0.73 0.12 0.24 0.76], 'Visible', 'off');
         handles.panel = hPanel;
         handles.modeDropdown = hModeDropdown;
         handles.gridSizeLabel = hGridLabel;
@@ -3485,10 +3633,10 @@ updateDisplayMode();
         uicontrol(hCtrlPanel,'Style','text','String','White:','Units','normalized','Position',[0.52 0.5 0.08 0.4]);
         hMaxSlider = uicontrol(hCtrlPanel,'Style','slider','Units','normalized','Position',[0.60 0.55 0.25 0.3]);
         hMaxRangeDropdown = uicontrol(hCtrlPanel,'Style','popupmenu','String',rangeOptions,'Value',2,'Units','normalized','Position',[0.86 0.55 0.1 0.3]);
-        uicontrol(hCtrlPanel,'Style','text','String','Colormap:','Units','normalized','Position',[0.1 0.05 0.2 0.3]);
+        uicontrol(hCtrlPanel,'Style','text','String','Colormap:','Units','normalized','Position',[0.02 0.05 0.18 0.3]);
         cmapStrings = {'gray','hot','parula','jet','cool','winter','summer','spring','autumn','Other...'};
-        hColormapDropdown = uicontrol(hCtrlPanel,'Style','popupmenu','String',cmapStrings,'Value',1,'Units','normalized','Position',[0.3 0.1 0.3 0.3]);
-        hInvertCmapCheckbox = uicontrol(hCtrlPanel,'Style','checkbox','String','Invert','Units','normalized','Position',[0.65 0.1 0.2 0.3]);
+        hColormapDropdown = uicontrol(hCtrlPanel,'Style','popupmenu','String',cmapStrings,'Value',1,'Units','normalized','Position',[0.20 0.1 0.28 0.3]);
+        hInvertCmapCheckbox = uicontrol(hCtrlPanel,'Style','checkbox','String','Invert','Units','normalized','Position',[0.50 0.1 0.14 0.3]);
         
         set(hMinRangeDropdown, 'Callback', @(s,e) updateSliderRange(s, hMinSlider));
         set(hMaxRangeDropdown, 'Callback', @(s,e) updateSliderRange(s, hMaxSlider));
@@ -3675,8 +3823,8 @@ updateDisplayMode();
         uicontrol(hCtrlPanel,'Style','text','String','Ch2 White:','Units','normalized','Position',[0.44 0.42 0.10 0.22]);
         hCh2Max = uicontrol(hCtrlPanel,'Style','slider','Units','normalized','Position',[0.55 0.45 0.22 0.2], 'UserData', p2(2), 'Min', p2(1)-0.1, 'Max', p2(2)+0.1, 'Value', p2(2));
         hCh2MaxRange = uicontrol(hCtrlPanel,'Style','popupmenu','String',rangeOptions,'Value',2,'Units','normalized','Position',[0.78 0.45 0.08 0.2]);
-        % Color assignment: Ch1→R Ch2→G, Ch1→G Ch2→R, Ch1→R Ch2→B, Ch1→B Ch2→R, Ch1→G Ch2→B, Ch1→B Ch2→G
-        colorAssignStr = {'Ch1→R Ch2→G','Ch1→G Ch2→R','Ch1→R Ch2→B','Ch1→B Ch2→R','Ch1→G Ch2→B','Ch1→B Ch2→G'};
+        % Color assignment: Ch1?R Ch2?G, Ch1?G Ch2?R, Ch1?R Ch2?B, Ch1?B Ch2?R, Ch1?G Ch2?B, Ch1?B Ch2?G
+        colorAssignStr = {'Ch1?R Ch2?G','Ch1?G Ch2?R','Ch1?R Ch2?B','Ch1?B Ch2?R','Ch1?G Ch2?B','Ch1?B Ch2?G'};
         uicontrol(hCtrlPanel,'Style','text','String','Color:','Units','normalized','Position',[0.01 0.08 0.12 0.22]);
         hColorAssign = uicontrol(hCtrlPanel,'Style','popupmenu','String',colorAssignStr,'Value',1,'Units','normalized','Position',[0.14 0.12 0.35 0.2]);
         panelUD = struct('ch1', ch1, 'ch2', ch2, 'hAxes', hAxes, 'displayHandles', displayHandles);
