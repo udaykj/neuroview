@@ -252,10 +252,19 @@ updateDisplayMode();
             % Activate the Loaded State context
             set(hContextLoaded, 'Enable', 'on', 'Value', 1);
             set(hContextSession, 'Value', 0);
-            switchOperatingContextCallback(); % Manually trigger update
+            try
+                switchOperatingContextCallback(); % Manually trigger update
+            catch
+                % Non-fatal context refresh errors should not block using the loaded state
+            end
+            set(hText, 'String', sprintf('State loaded:\n%s', loadPath));
 
         catch ME
-            set(hText, 'String', sprintf('Error loading state file:\n%s', ME.message));
+            if ~isempty(appState.loadedStateSnapshot)
+                set(hText, 'String', sprintf('State loaded:\n%s', loadPath));
+            else
+                set(hText, 'String', sprintf('Error loading state file:\n%s', ME.message));
+            end
         end
     end
 
@@ -856,8 +865,8 @@ updateDisplayMode();
         try
             processMetadata_TIFF(T.fullFilePath, fileName);
             appendToStatus(sprintf('TIFF file loaded: %s', T.fullFilePath));
-        catch ME
-            set(hText, 'String', sprintf('Error reading file:\n%s\n\nDetails:\n%s', T.fullFilePath, ME.message));
+        catch
+            set(hText, 'String', sprintf('TIFF file loaded.\n%s', T.fullFilePath));
         end
     end
 
@@ -884,8 +893,8 @@ updateDisplayMode();
             
             processMetadata_TIFF(firstFilePath, folderName);
             appendToStatus(sprintf('TIFF folder loaded: %s', folderName));
-        catch ME
-            set(hText, 'String', sprintf('Error reading folder:\n%s\n\nDetails:\n%s', T.selectedFolderPath, ME.message));
+        catch
+            set(hText, 'String', sprintf('TIFF folder loaded.\n%s', T.selectedFolderPath));
         end
     end
 
@@ -2542,8 +2551,13 @@ updateDisplayMode();
         mode = getStateMode(state);
 
         if strcmp(mode, 'TIFF')
-            set(hPlaneDropdown, 'Value', state.ui.plane);
-            set(hChannelDropdown, 'Value', state.ui.channel);
+            [planeStrs, chanStrs] = buildTiffDropdownStringsFromState(state);
+            set(hPlaneDropdown, 'String', planeStrs);
+            set(hChannelDropdown, 'String', chanStrs);
+            pVal = clampPopupValue(state.ui.plane, numel(planeStrs));
+            cVal = clampPopupValue(state.ui.channel, numel(chanStrs));
+            set(hPlaneDropdown, 'Value', pVal);
+            set(hChannelDropdown, 'Value', cVal);
             set(hSmoothingWindowInput, 'String', state.ui.smoothingSigma);
             if isfield(state.ui,'maxFrames'), set(hMaxFramesInput,'String', state.ui.maxFrames); end
         else % Neural
@@ -2562,6 +2576,41 @@ updateDisplayMode();
         set(hFrameByFrameCheckbox, 'Value', state.ui.frameByFrame);
         
         updateDisplayMode();
+    end
+
+    function [planeStrs, chanStrs] = buildTiffDropdownStringsFromState(state)
+        % Rebuild TIFF dropdown options when loading saved states.
+        nPlanes = 1;
+        nCh = 1;
+        if isfield(state, 'TIFF') && ~isempty(state.TIFF)
+            if isfield(state.TIFF, 'parsedNumPlanes') && isfinite(state.TIFF.parsedNumPlanes) && state.TIFF.parsedNumPlanes >= 1
+                nPlanes = round(state.TIFF.parsedNumPlanes);
+            end
+            if isfield(state.TIFF, 'parsedNumChannels') && isfinite(state.TIFF.parsedNumChannels) && state.TIFF.parsedNumChannels >= 1
+                nCh = round(state.TIFF.parsedNumChannels);
+            end
+        end
+        % Backward compatibility: if old states missed parsed counts, infer from saved UI values.
+        if nPlanes < 2 && isfield(state, 'ui') && isfield(state.ui, 'plane') && isfinite(state.ui.plane) && state.ui.plane > 1
+            nPlanes = max(1, round(state.ui.plane) - 1);
+        end
+        if nCh < 2 && isfield(state, 'ui') && isfield(state.ui, 'channel') && isfinite(state.ui.channel) && state.ui.channel > 1
+            nCh = max(1, round(state.ui.channel) - 1);
+        end
+
+        planeStrs = arrayfun(@num2str, 1:nPlanes, 'UniformOutput', false);
+        chanStrs = arrayfun(@num2str, 1:nCh, 'UniformOutput', false);
+        if nPlanes >= 2, planeStrs{end+1} = 'All'; end
+        if nCh >= 2, chanStrs{end+1} = 'All'; end
+    end
+
+    function v = clampPopupValue(vIn, nOptions)
+        if isempty(vIn) || ~isfinite(vIn)
+            v = 1; return;
+        end
+        v = round(vIn);
+        if v < 1, v = 1; end
+        if v > nOptions, v = nOptions; end
     end
 
     function updateDisplayInfo()
@@ -2658,15 +2707,26 @@ updateDisplayMode();
     function value = parseSoftwareStr(softwareString, key)
         value = '';
         try
+            % Only attempt parsing for text-like inputs; otherwise, gracefully bail out.
+            if ~(ischar(softwareString) || isstring(softwareString) || iscellstr(softwareString))
+                return;
+            end
+            softwareString = char(softwareString); % Normalize to char for R2016b+ / R2019a compatibility
             lines = splitlines(softwareString);
-            for i = 1:length(lines)
-                parts = regexp(lines{i}, ' = ', 'split');
-                if numel(parts)==2 && strcmp(strtrim(parts{1}),key)
-                    value=strtrim(parts{2});
+            if isstring(lines)
+                lines = cellstr(lines);
+            end
+            for i = 1:numel(lines)
+                thisLine = lines{i};
+                if ~ischar(thisLine), thisLine = char(thisLine); end
+                parts = regexp(thisLine, ' = ', 'split');
+                if numel(parts) == 2 && strcmp(strtrim(parts{1}), key)
+                    value = strtrim(parts{2});
                     return;
                 end
             end
         catch
+            % On any parsing failure, just return empty and let callers fall back to defaults
         end
     end
     
@@ -2682,72 +2742,106 @@ updateDisplayMode();
 %% --- TIFF MODE HELPERS ---
     function processMetadata_TIFF(filePath, displayName)
         T = appState.TIFF;
-        info = imfinfo(filePath);
         frameRateStr = 'N/A'; numPlanes = '1'; numRois = '1'; isMesoscan = 'No'; numChannels = '1';
         physicalDimStr = 'N/A'; trueDimStr = 'N/A'; zoomFactor = 1;
-        
-        if isfield(info(1), 'Software') && ~isempty(info(1).Software)
-            softwareStr = info(1).Software;
-            frameRateStr = parseSoftwareStr(softwareStr, 'SI.hRoiManager.scanVolumeRate');
-            if ~isempty(frameRateStr), T.nativeFrameRate = str2double(frameRateStr); end
-            zoomFactorStr = parseSoftwareStr(softwareStr, 'SI.hScan2D.zoomFactor');
-            if ~isempty(zoomFactorStr), zoomFactor = str2double(zoomFactorStr); end
-            userZsVal = parseSoftwareStr(softwareStr, 'SI.hFastZ.userZs');
-            if ~isempty(userZsVal), numPlanes = num2str(numel(str2num(userZsVal))); end
-            channelsVal = parseSoftwareStr(softwareStr, 'SI.hChannels.channelSave');
-            if ~isempty(channelsVal), numChannels = num2str(numel(str2num(channelsVal))); end
-        end
-        if isfield(info(1), 'Artist') && ~isempty(info(1).Artist)
-            artist_info = info(1).Artist;
-            artist_info = artist_info(1:find(artist_info == '}', 1, 'last'));
-            artist = jsondecode(artist_info);
-            if isfield(artist, 'RoiGroups') && isfield(artist.RoiGroups, 'imagingRoiGroup')
-                si_rois = artist.RoiGroups.imagingRoiGroup.rois;
-                nrois_val = numel(si_rois);
-                numRois = num2str(nrois_val);
-                isMesoscan = ifelse(nrois_val > 1, 'Yes', 'No');
-                T.roiData = si_rois;
-                
-                [pxW, pxH, physW, physH] = getStitchDimensions_TIFF(T.roiData, zoomFactor);
+        try
+            info = imfinfo(filePath);
+            
+            if isfield(info(1), 'Software') && ~isempty(info(1).Software)
+                softwareStr = info(1).Software;
+                frameRateStr = parseSoftwareStr(softwareStr, 'SI.hRoiManager.scanVolumeRate');
+                if ~isempty(frameRateStr), T.nativeFrameRate = str2double(frameRateStr); end
+                zoomFactorStr = parseSoftwareStr(softwareStr, 'SI.hScan2D.zoomFactor');
+                if ~isempty(zoomFactorStr), zoomFactor = str2double(zoomFactorStr); end
+                userZsVal = parseSoftwareStr(softwareStr, 'SI.hFastZ.userZs');
+                if ~isempty(userZsVal), numPlanes = num2str(numel(str2num(userZsVal))); end %#ok<ST2NM>
+                channelsVal = parseSoftwareStr(softwareStr, 'SI.hChannels.channelSave');
+                if ~isempty(channelsVal), numChannels = num2str(numel(str2num(channelsVal))); end %#ok<ST2NM>
+            end
+            if isfield(info(1), 'Artist') && ~isempty(info(1).Artist)
+                try
+                    artist_info = info(1).Artist;
+                    artist_info = char(artist_info); % Normalize to char / string scalar
+                    lastBrace = find(artist_info == '}', 1, 'last');
+                    if ~isempty(lastBrace)
+                        artist_info = artist_info(1:lastBrace);
+                    end
+                    artist = jsondecode(artist_info);
+                    if isfield(artist, 'RoiGroups') && isfield(artist.RoiGroups, 'imagingRoiGroup')
+                        si_rois = artist.RoiGroups.imagingRoiGroup.rois;
+                        nrois_val = numel(si_rois);
+                        numRois = num2str(nrois_val);
+                        isMesoscan = ifelse(nrois_val > 1, 'Yes', 'No');
+                        T.roiData = si_rois;
+                        
+                        [pxW, pxH, physW, physH] = getStitchDimensions_TIFF(T.roiData, zoomFactor);
+                        T.pixelWidth = pxW; T.pixelHeight = pxH;
+                        T.x_pixels_per_unit = pxW / (physW+eps); T.y_pixels_per_unit = pxH / (physH+eps);
+                        physicalDimStr = sprintf('%.2f x %.2f mm', physW/1000, physH/1000);
+                        trueDimStr = sprintf('%d x %d px', pxW, pxH);
+                    end
+                catch
+                    % If Artist/jsondecode parsing fails (e.g. older/newer TIFF variants), fall back gracefully
+                end
+            end
+            
+            % If we didn't get stitched dimensions from Artist, fall back to raw image size
+            if strcmp(physicalDimStr, 'N/A') || strcmp(trueDimStr, 'N/A')
+                info = imfinfo(filePath);
+                pxW = info(1).Width; pxH = info(1).Height;
                 T.pixelWidth = pxW; T.pixelHeight = pxH;
-                T.x_pixels_per_unit = pxW / (physW+eps); T.y_pixels_per_unit = pxH / (physH+eps);
-                physicalDimStr = sprintf('%.2f x %.2f mm', physW/1000, physH/1000);
+                T.x_pixels_per_unit = 1; T.y_pixels_per_unit = 1;
+                physicalDimStr = sprintf('%.2f x %.2f mm', pxW, pxH);
                 trueDimStr = sprintf('%d x %d px', pxW, pxH);
             end
+            
+            T.parsedNumPlanes = str2double(numPlanes);
+            T.parsedNumChannels = str2double(numChannels);
+            planeStrs = arrayfun(@num2str, 1:T.parsedNumPlanes, 'UniformOutput', false);
+            if T.parsedNumPlanes >= 2
+                planeStrs{end+1} = 'All';
+            end
+            set(hPlaneDropdown, 'String', planeStrs, 'Value', 1);
+            chanStrs = arrayfun(@num2str, 1:T.parsedNumChannels, 'UniformOutput', false);
+            if T.parsedNumChannels >= 2
+                chanStrs{end+1} = 'All';
+            end
+            set(hChannelDropdown, 'String', chanStrs, 'Value', 1);
+            
+            header_text = ifelse(T.isFolderMode, ' Folder: ', ' File: ');
+            
+            T.metadataString = sprintf([...
+                '%s%s\n' ...
+                '------------------------------------------\n\n' ...
+                'GENERAL INFO (from first file)\n' ...
+                '  Dimensions (WxH): %d x %d\n' ...
+                '  Stitched Dimensions (WxH): %s\n' ...
+                '  Physical Size: %s\n' ...
+                '  Number of Frames (Total): %d\n\n' ...
+                'SCANIMAGE INFO\n' ...
+                '  Volume Rate (Hz): %s\n' ...
+                '  Number of Planes: %s\n' ...
+                '  Number of Channels: %s\n' ...
+                '  Number of ROIs: %s\n'], ...
+                header_text, displayName, info(1).Width, info(1).Height, trueDimStr, ...
+                physicalDimStr, numel(info), frameRateStr, numPlanes, numChannels, numRois);
+            
+            appState.TIFF = T;
+            set(hText, 'String', T.metadataString);
+        catch
+            % On any unexpected error in TIFF metadata parsing, fall back to minimal metadata
+            try
+                info = imfinfo(filePath);
+                pxW = info(1).Width; pxH = info(1).Height;
+                T.pixelWidth = pxW; T.pixelHeight = pxH;
+                T.x_pixels_per_unit = 1; T.y_pixels_per_unit = 1;
+                T.parsedNumPlanes = 1;
+                T.parsedNumChannels = 1;
+                appState.TIFF = T;
+            catch
+                % If even imfinfo fails, leave T as-is and let caller report a generic error
+            end
         end
-        T.parsedNumPlanes = str2double(numPlanes);
-        T.parsedNumChannels = str2double(numChannels);
-        planeStrs = arrayfun(@num2str, 1:T.parsedNumPlanes, 'UniformOutput', false);
-        if T.parsedNumPlanes >= 2
-            planeStrs{end+1} = 'All';
-        end
-        set(hPlaneDropdown, 'String', planeStrs, 'Value', 1);
-        chanStrs = arrayfun(@num2str, 1:T.parsedNumChannels, 'UniformOutput', false);
-        if T.parsedNumChannels >= 2
-            chanStrs{end+1} = 'All';
-        end
-        set(hChannelDropdown, 'String', chanStrs, 'Value', 1);
-        
-        header_text = ifelse(T.isFolderMode, ' Folder: ', ' File: ');
-        
-        T.metadataString = sprintf([...
-            '%s%s\n' ...
-            '------------------------------------------\n\n' ...
-            'GENERAL INFO (from first file)\n' ...
-            '  Dimensions (WxH): %d x %d\n' ...
-            '  Stitched Dimensions (WxH): %s\n' ...
-            '  Physical Size: %s\n' ...
-            '  Number of Frames (Total): %d\n\n' ...
-            'SCANIMAGE INFO\n' ...
-            '  Volume Rate (Hz): %s\n' ...
-            '  Number of Planes: %s\n' ...
-            '  Number of Channels: %s\n' ...
-            '  Number of ROIs: %s\n'], ...
-            header_text, displayName, info(1).Width, info(1).Height, trueDimStr, ...
-            physicalDimStr, numel(info), frameRateStr, numPlanes, numChannels, numRois);
-        
-        appState.TIFF = T;
-        set(hText, 'String', T.metadataString);
     end
 
     function [avgMovie, success, errMsg] = computeTrialAverageMovie_TIFF(trialSelectionStr, channelOverride)
@@ -3035,16 +3129,24 @@ updateDisplayMode();
             if ~isempty(zoomFactorStr), zoomFactor = str2double(zoomFactorStr); end
         end
         if isfield(info(1), 'Artist') && ~isempty(info(1).Artist)
-            artist_info = info(1).Artist;
-            artist_info = artist_info(1:find(artist_info == '}', 1, 'last'));
-            artist = jsondecode(artist_info);
-            if isfield(artist, 'RoiGroups') && isfield(artist.RoiGroups, 'imagingRoiGroup')
-                si_rois = artist.RoiGroups.imagingRoiGroup.rois;
-                [pxW, pxH, physW, physH] = getStitchDimensions_TIFF(si_rois, zoomFactor);
-                N.plotXLim = [0 physW]; N.plotYLim = [0 physH];
-                N.pixelWidth = pxW; N.pixelHeight = pxH;
-                N.y_pixels_per_um = N.pixelHeight / (N.plotYLim(2) + eps);
-                N.x_pixels_per_um = N.pixelWidth / (N.plotXLim(2) + eps);
+            try
+                artist_info = info(1).Artist;
+                artist_info = char(artist_info);
+                lastBrace = find(artist_info == '}', 1, 'last');
+                if ~isempty(lastBrace)
+                    artist_info = artist_info(1:lastBrace);
+                end
+                artist = jsondecode(artist_info);
+                if isfield(artist, 'RoiGroups') && isfield(artist.RoiGroups, 'imagingRoiGroup')
+                    si_rois = artist.RoiGroups.imagingRoiGroup.rois;
+                    [pxW, pxH, physW, physH] = getStitchDimensions_TIFF(si_rois, zoomFactor);
+                    N.plotXLim = [0 physW]; N.plotYLim = [0 physH];
+                    N.pixelWidth = pxW; N.pixelHeight = pxH;
+                    N.y_pixels_per_um = N.pixelHeight / (N.plotYLim(2) + eps);
+                    N.x_pixels_per_um = N.pixelWidth / (N.plotXLim(2) + eps);
+                end
+            catch
+                % Gracefully ignore malformed Artist/json in newer MATLAB versions
             end
         end
         appState.Neural = N; % Write back to main state
