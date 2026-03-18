@@ -1310,10 +1310,10 @@ updateDisplayMode();
             uicontrol(hPlaybackPanel, 'Style', 'pushbutton', 'String', 'Stop', 'Units', 'normalized', 'Position', [0.13 0.08 0.10 0.34], 'Callback', @(s,e) stopMovie(), 'FontSize', 9);
             hFrameCounter = uicontrol(hPlaybackPanel, 'Style', 'text', 'String', 'Frame 1/X', 'Units', 'normalized', 'Position', [0.24 0.08 0.2 0.34], 'FontSize', 9);
             uicontrol(hPlaybackPanel, 'Style', 'text', 'String', 'Speed:', 'Units', 'normalized', 'Position', [0.46 0.06 0.08 0.34], 'HorizontalAlignment', 'right', 'FontSize', 9);
-            hMovieSpeedDropdown = uicontrol('Parent', hPlaybackPanel, 'Style', 'popupmenu', 'String', {'0.5x', '1x', '2x', '4x', '8x', '16x'}, 'Value', 2, 'Units', 'normalized', 'Position', [0.55 0.08 0.08 0.34], 'Callback', @updateSpeed, 'FontSize', 9);
-            uicontrol(hPlaybackPanel, 'Style', 'pushbutton', 'String', 'Notes', 'Units', 'normalized', 'Position', [0.65 0.08 0.11 0.34], 'Callback', @openNotesWindow, 'FontSize', 9);
-            uicontrol(hPlaybackPanel, 'Style', 'pushbutton', 'String', 'Save..', 'Units', 'normalized', 'Position', [0.77 0.08 0.11 0.34], 'Callback', @saveMovie, 'FontSize', 9);
-            uicontrol(hPlaybackPanel, 'Style', 'pushbutton', 'String', 'Traces', 'Units', 'normalized', 'Position', [0.89 0.08 0.10 0.34], 'Callback', @openTracesWindow, 'FontSize', 8.5);
+            hMovieSpeedDropdown = uicontrol('Parent', hPlaybackPanel, 'Style', 'popupmenu', 'String', {'0.5x', '1x', '2x', '4x', '8x', '16x'}, 'Value', 2, 'Units', 'normalized', 'Position', [0.55 0.08 0.1 0.34], 'Callback', @updateSpeed, 'FontSize', 9);
+            uicontrol(hPlaybackPanel, 'Style', 'pushbutton', 'String', 'Notes', 'Units', 'normalized', 'Position', [0.665 0.08 0.11 0.34], 'Callback', @openNotesWindow, 'FontSize', 9);
+            uicontrol(hPlaybackPanel, 'Style', 'pushbutton', 'String', 'Save..', 'Units', 'normalized', 'Position', [0.78 0.08 0.11 0.34], 'Callback', @saveMovie, 'FontSize', 9);
+            uicontrol(hPlaybackPanel, 'Style', 'pushbutton', 'String', 'Traces', 'Units', 'normalized', 'Position', [0.895 0.08 0.10 0.34], 'Callback', @openTracesWindow, 'FontSize', 8.5);
 
             % Setup display mode options based on available data
             tiffModes = {'Image', 'Grid'};
