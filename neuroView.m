@@ -3569,7 +3569,7 @@ updateDisplayMode();
     end
 
     function [dy, dx] = getPhaseCorrShift_TIFF(ref, img, maxShiftPx)
-        % Phase correlation for 2D translation. Returns subpixel [dy, dx]. Optionally clamp to maxShiftPx.
+        % Phase correlation for 2D translation. Returns integer [dy, dx]. Optionally clamp to maxShiftPx.
         ref = double(ref); img = double(img);
         % Clip to percentile range to reduce hot pixels / outliers
         pr = prctile(ref(:), [1 99]); ref = min(max(ref, pr(1)), pr(2));
@@ -3585,27 +3585,7 @@ updateDisplayMode();
         [~, idx] = max(r(:));
         [iy, ix] = ind2sub(size(r), idx);
         Ly = size(r, 1); Lx = size(r, 2);
-        % Subpixel refinement: parabolic fit in 3x3 neighborhood (reduces residual jitter)
-        ix_sub = double(ix); iy_sub = double(iy);
-        if ix > 1 && ix < Lx
-            v = r(iy, ix-1); c = r(iy, ix); w = r(iy, ix+1);
-            denom = 2 * (v - 2*c + w + 1e-12);
-            if abs(denom) > 1e-12
-                delta = (v - w) / denom;
-                delta = max(-0.5, min(0.5, delta));
-                ix_sub = ix + delta;
-            end
-        end
-        if iy > 1 && iy < Ly
-            v = r(iy-1, ix); c = r(iy, ix); w = r(iy+1, ix);
-            denom = 2 * (v - 2*c + w + 1e-12);
-            if abs(denom) > 1e-12
-                delta = (v - w) / denom;
-                delta = max(-0.5, min(0.5, delta));
-                iy_sub = iy + delta;
-            end
-        end
-        dy = iy_sub - 1; dx = ix_sub - 1;
+        dy = iy - 1; dx = ix - 1;
         if dy > Ly/2, dy = dy - Ly; end
         if dx > Lx/2, dx = dx - Lx; end
         if nargin >= 3 && ~isempty(maxShiftPx) && maxShiftPx > 0
@@ -3616,7 +3596,7 @@ updateDisplayMode();
 
     function frameOut = applyMotionCorrect_TIFF(ref, frame, doMC, maxShiftPx, planeIdx)
         if ~doMC, frameOut = frame; return; end
-        if nargin < 4, maxShiftPx = 25; end  % allow slightly larger corrections; subpixel keeps it smooth
+        if nargin < 4, maxShiftPx = 15; end  % keep corrections conservative to avoid noisy peaks
         if nargin < 5, planeIdx = []; end
         % Multi-plane (Plane=All): ref is H x W x P; each plane registers to its own mean reference.
         if ndims(ref) >= 3 && size(ref, 3) > 1
@@ -3626,7 +3606,7 @@ updateDisplayMode();
             refUse = ref;
         end
         [dy, dx] = getPhaseCorrShift_TIFF(refUse, frame, maxShiftPx);
-        % Apply shift: both signs for MATLAB imtranslate/FFT convention; imtranslate interpolates for subpixel
+        % Apply shift: both signs for MATLAB imtranslate/FFT convention.
         frameOut = imtranslate(frame, [dx, dy], 'OutputView', 'same');
     end
 
