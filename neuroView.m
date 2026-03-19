@@ -27,6 +27,7 @@ function neuroView()
 
 % --- Main State Variables ---
 isSwitchingContext = false; % Guard flag to prevent caching during programmatic UI updates
+statusStepTic = []; % For appendToStatusTimed: elapsed since last reset or last timed message
 appState = struct(); % Master state holder
 appState.currentMode = 'TIFF'; % 'TIFF' or 'Neural'
 
@@ -93,6 +94,9 @@ uicontrol('Parent', hTiffLoadPanel, 'Style', 'pushbutton', 'String', 'Load Areas
     'Position', [200 40 90 30], 'FontSize', 10, 'Callback', @loadVareaCallback);
 uicontrol('Parent', hTiffLoadPanel, 'Style', 'pushbutton', 'String', 'Load State / Movie', ...
     'Position', [295 40 125 30], 'FontSize', 10, 'Callback', @loadStateCallback);
+hMotionCorrectCheckbox = uicontrol('Parent', hTiffLoadPanel, 'Style', 'checkbox', 'String', 'Motion correct', ...
+    'Position', [10 10 120 20], 'Value', 0, 'BackgroundColor', [0.94 0.94 0.94], ...
+    'TooltipString', 'Register frames to first frame (phase correlation) before averaging/playback');
 hReloadDataCheckbox_Tiff = uicontrol('Parent', hTiffLoadPanel, 'Style', 'checkbox', 'String', 'Reload raw data', ...
     'Position', [295 10 130 20], 'Value', 0, 'BackgroundColor', [0.94 0.94 0.94]);
 
@@ -313,15 +317,16 @@ updateDisplayMode();
             if isfield(localState, 'reloadRaw') && localState.reloadRaw == 1
                 [processedData, localState, success, errMsg] = getOrProcessData_LOADED();
                 if ~success, set(hText, 'String', errMsg); return; end
-                appendToStatus('Averaging data (Loaded State, raw reload)...');
                 if strcmp(localState.mode, 'TIFF')
                     timeDim = ifelse(ndims(processedData) == 4, 4, 3);
                     avgData = mean(processedData, timeDim);
                 else
                     avgData = mean(processedData, 2);
                 end
+                appendToStatusTimed('Averaged data (Loaded State, raw reload).');
             else
                 set(hText, 'String', 'Averaging pre-loaded movie data...'); drawnow;
+                resetStatusStepTimer();
                 isTiffMode = strcmp(localState.mode, 'TIFF');
                 if isTiffMode
                     timeDim = ifelse(ndims(localState.movieData) == 4, 4, 3);
@@ -329,18 +334,19 @@ updateDisplayMode();
                     timeDim = 2;
                 end
                 avgData = mean(localState.movieData, timeDim);
+                appendToStatusTimed('Averaged pre-loaded movie data.');
             end
         else
             [processedData, localState, success, errMsg] = getOrProcessData();
             if ~success, set(hText, 'String', errMsg); return; end
 
-            appendToStatus('Averaging data...');
             if strcmp(localState.mode, 'TIFF')
                 timeDim = ifelse(ndims(processedData) == 4, 4, 3);
                 avgData = mean(processedData, timeDim);
             else
                 avgData = mean(processedData, 2);
             end
+            appendToStatusTimed('Averaged data over time/trials.');
         end
 
         try
@@ -467,9 +473,9 @@ updateDisplayMode();
                 contrastHandles.setPlayerState(playerStateToApply);
             end
 
-            appendToStatus('Successfully plotted average activity.');
+            appendToStatusTimed('Successfully plotted average activity.');
         catch ME
-            appendToStatus(sprintf('Error plotting average:\n%s\nLine: %d', ME.message, ME.stack(1).line));
+            appendToStatusTimed(sprintf('Error plotting average:\n%s\nLine: %d', ME.message, ME.stack(1).line));
         end
 
         function displayModeChanged_static()
@@ -747,13 +753,13 @@ updateDisplayMode();
                 end
                 rollingAvg = round(str2double(get(hRollingAvgInput, 'String')));
                 if isnan(rollingAvg) || rollingAvg < 1, set(hText, 'String', 'Invalid Rolling Average.'); return; end
-                appendToStatus(sprintf('Applying rolling average of %d (Loaded State)...', rollingAvg));
                 if strcmp(generationState.mode, 'TIFF')
                     timeDim = ifelse(ndims(processedData) == 4, 4, 3);
                     precomputedMovie = movmean(processedData, rollingAvg, timeDim, 'Endpoints', 'shrink');
                 else
                     precomputedMovie = movmean(processedData, rollingAvg, 2, 'Endpoints', 'shrink');
                 end
+                appendToStatusTimed(sprintf('Applied rolling average of %d (Loaded State).', rollingAvg));
                 playerStateToApply = ifisfield(generationState, 'playerState');
             else
                 generationState = appState.loadedStateSnapshot;
@@ -778,17 +784,18 @@ updateDisplayMode();
             rollingAvg = round(str2double(get(hRollingAvgInput, 'String')));
             if isnan(rollingAvg) || rollingAvg < 1, set(hText, 'String', 'Invalid Rolling Average.'); return; end
             
-            appendToStatus(sprintf('Applying rolling average of %d...', rollingAvg));
-            
             if strcmp(generationState.mode, 'TIFF')
                 timeDim = ifelse(ndims(processedData) == 4, 4, 3);
                 precomputedMovie = movmean(processedData, rollingAvg, timeDim, 'Endpoints', 'shrink');
             else % Neural
                 precomputedMovie = movmean(processedData, rollingAvg, 2, 'Endpoints', 'shrink');
             end
+            appendToStatusTimed(sprintf('Applied rolling average of %d.', rollingAvg));
         end
 
+        resetStatusStepTimer();
         launchUnifiedMoviePlayer(precomputedMovie, playerStateToApply, generationState);
+        appendToStatusTimed('Movie player opened.');
     end
 
 %% --- DATA CACHING & PROCESSING ---
@@ -811,6 +818,7 @@ updateDisplayMode();
                 return;
             end
             set(hText, 'String', 'Processing data (channel for movie)...'); drawnow;
+            resetStatusStepTimer();
             [newData, procSuccess, procErrMsg] = getProcessedData(channelOverride);
             if procSuccess
                 processedData = newData;
@@ -830,7 +838,8 @@ updateDisplayMode();
            isequaln(generationState, appState.sessionCache.fingerprint)
             
             % Cache Hit
-            appendToStatus('Using cached data...');
+            resetStatusStepTimer();
+            appendToStatusTimed('Using cached data...');
             processedData = appState.sessionCache.data;
             success = true;
             
@@ -847,6 +856,7 @@ updateDisplayMode();
             end
 
             set(hText, 'String', 'Processing new data...'); drawnow;
+            resetStatusStepTimer();
             [newData, procSuccess, procErrMsg] = getProcessedData();
             
             if procSuccess
@@ -938,12 +948,14 @@ updateDisplayMode();
             
             % Cache check
             if isfield(cacheSlot, 'fingerprint') && ~isempty(cacheSlot.fingerprint) && isequaln(generationState, cacheSlot.fingerprint)
-                appendToStatus('Using loaded-state cache...');
+                resetStatusStepTimer();
+                appendToStatusTimed('Using loaded-state cache...');
                 processedData = cacheSlot.data;
                 success = true;
             else
                 % Compute new processed data using existing pipeline functions
                 set(hText, 'String', 'Processing new data (Loaded State)...'); drawnow;
+                resetStatusStepTimer();
                 [newData, procSuccess, procErrMsg] = getProcessedData();
                 if ~procSuccess
                     errMsg = procErrMsg; success = false;
@@ -1211,10 +1223,11 @@ updateDisplayMode();
         end
         
         % Step 3: Apply spatial smoothing (for TIFF mode)
+        % Reset the step timer so smoothing time is comparable with/without motion correction.
+        resetStatusStepTimer();
         if strcmp(appState.currentMode, 'TIFF')
             sigma_microns = str2double(get(hSmoothingWindowInput, 'String'));
             if ~isnan(sigma_microns) && sigma_microns > 0
-                appendToStatus(sprintf('Applying spatial smoothing (%.1f um)...', sigma_microns));
                 td = ndims(processedData);
                 nT = size(processedData, td);
                 if td == 4
@@ -1229,6 +1242,7 @@ updateDisplayMode();
                         processedData(:,:,i) = applySpatialSmoothing_TIFF(processedData(:,:,i), sigma_microns);
                     end
                 end
+                appendToStatusTimed(sprintf('Applied spatial smoothing (%.1f um).', sigma_microns));
             end
         end
         
@@ -2708,6 +2722,7 @@ updateDisplayMode();
             ui.channel = get(hChannelDropdown, 'Value');
             ui.smoothingSigma = get(hSmoothingWindowInput, 'String');
             ui.maxFrames = get(hMaxFramesInput, 'String');
+            ui.motionCorrect = get(hMotionCorrectCheckbox, 'Value');
         else
             ui.neuropilCoeff = get(hNeuropilCoeffInput, 'String');
             ui.detrend = get(hDetrendCheckbox, 'Value');
@@ -2742,6 +2757,7 @@ updateDisplayMode();
             S.plane = get(hPlaneDropdown, 'Value');
             S.channel = get(hChannelDropdown, 'Value');
             S.smoothingSigma = get(hSmoothingWindowInput, 'String');
+            S.motionCorrect = get(hMotionCorrectCheckbox, 'Value');
             appState.uiStateCache.TIFF = S;
         else
             S.neuropilCoeff = get(hNeuropilCoeffInput, 'String');
@@ -2766,6 +2782,7 @@ updateDisplayMode();
             S.channel = get(hChannelDropdown, 'Value');
             S.smoothingSigma = get(hSmoothingWindowInput, 'String');
             S.maxFrames = get(hMaxFramesInput, 'String');
+            S.motionCorrect = get(hMotionCorrectCheckbox, 'Value');
         else
             S.neuropilCoeff = get(hNeuropilCoeffInput, 'String');
         end
@@ -2804,6 +2821,7 @@ updateDisplayMode();
                 set(hChannelDropdown, 'Value', S.channel);
                 set(hSmoothingWindowInput, 'String', S.smoothingSigma);
                 if isfield(S,'maxFrames'), set(hMaxFramesInput,'String', S.maxFrames); end
+                if isfield(S,'motionCorrect'), set(hMotionCorrectCheckbox, 'Value', S.motionCorrect); else set(hMotionCorrectCheckbox, 'Value', 0); end
             else
                 set(hNeuropilCoeffInput, 'String', S.neuropilCoeff);
             end
@@ -2825,6 +2843,7 @@ updateDisplayMode();
             set(hChannelDropdown, 'Value', cVal);
             set(hSmoothingWindowInput, 'String', state.ui.smoothingSigma);
             if isfield(state.ui,'maxFrames'), set(hMaxFramesInput,'String', state.ui.maxFrames); end
+            if isfield(state.ui,'motionCorrect'), set(hMotionCorrectCheckbox, 'Value', state.ui.motionCorrect); else set(hMotionCorrectCheckbox, 'Value', 0); end
         else % Neural
             set(hNeuropilCoeffInput, 'String', state.ui.neuropilCoeff);
             set(hDetrendCheckbox, 'Value', state.ui.detrend);
@@ -2950,6 +2969,21 @@ updateDisplayMode();
         % Prepend latest status to the top; metadata appenders will still set full text when needed
         set(hText, 'String', [{newText}; oldText]);
         drawnow;
+    end
+    
+    function resetStatusStepTimer()
+        statusStepTic = tic;
+    end
+    
+    function appendToStatusTimed(newText)
+        % Append status with seconds elapsed since last resetStatusStepTimer or appendToStatusTimed
+        if isempty(statusStepTic)
+            tsec = 0;
+        else
+            tsec = toc(statusStepTic);
+        end
+        appendToStatus(sprintf('%s [%.2fs]', newText, tsec));
+        statusStepTic = tic;
     end
     
     function updateDisplayMode(~,~)
@@ -3191,6 +3225,10 @@ updateDisplayMode();
         end
         
         try
+            % When motionCorrect: each raw stitched frame is registered to the reference BEFORE
+            % it is added into the trial average (folder) or movie stack (single file).
+            motionCorrect = (get(hMotionCorrectCheckbox, 'Value') == 1);
+            ref = [];
             if T.isFolderMode
                 evaluatedTrials = evalin('base', trialSelectionStr);
                 selectedTrials = ifelse(islogical(evaluatedTrials), find(evaluatedTrials), evaluatedTrials);
@@ -3222,7 +3260,6 @@ updateDisplayMode();
                 end
                 if isempty(trialFilePaths), error('No valid trial files found.'); end
                 
-                appendToStatus(sprintf('Found %d trials. Averaging frames...', numel(trialFilePaths)));
                 minTrialLength = min(trialLengths);
                 maxFramesStr = get(hMaxFramesInput,'String');
                 maxFramesVal = str2double(maxFramesStr);
@@ -3232,20 +3269,83 @@ updateDisplayMode();
                 
                 firstFrame = stitchFrame_TIFF(imread(trialFilePaths{1}, 1), infoFirstPerTrial{1}, T.roiData);
                 [H, W] = size(firstFrame);
+                if motionCorrect
+                    nRefFrames = min(50, minTrialLength);
+                    nPl = numel(planeList);
+                    if isMerge
+                        if nPl == 1
+                            refSum = zeros(H, W, 'double');
+                            for i = 1:nRefFrames
+                                f = double(stitchFrame_TIFF(imread(trialFilePaths{1}, framesPerTrialCh1{1}(i)), infoFirstPerTrial{1}, T.roiData));
+                                refSum = refSum + f;
+                            end
+                            ref = refSum / nRefFrames;
+                        else
+                            ref = zeros(H, W, nPl, 'double');
+                            for p = 1:nPl
+                                refSum = zeros(H, W, 'double');
+                                nF1 = numel(imfinfo(trialFilePaths{1}));
+                                for i = 1:nRefFrames
+                                    fp1 = getFramesForPlaneChannel_TIFF(planeList(p), 1, nF1);
+                                    refSum = refSum + double(stitchFrame_TIFF(imread(trialFilePaths{1}, fp1(i)), infoFirstPerTrial{1}, T.roiData));
+                                end
+                                ref(:, :, p) = refSum / nRefFrames;
+                            end
+                        end
+                    else
+                        if nPl == 1
+                            refSum = zeros(H, W, 'double');
+                            for i = 1:nRefFrames
+                                fp = framesPerTrialPerPlane{1};
+                                refSum = refSum + double(stitchFrame_TIFF(imread(trialFilePaths{1}, fp{1}(i)), infoFirstPerTrial{1}, T.roiData));
+                            end
+                            ref = refSum / nRefFrames;
+                        else
+                            ref = zeros(H, W, nPl, 'double');
+                            for p = 1:nPl
+                                refSum = zeros(H, W, 'double');
+                                for i = 1:nRefFrames
+                                    fp = framesPerTrialPerPlane{1};
+                                    refSum = refSum + double(stitchFrame_TIFF(imread(trialFilePaths{1}, fp{p}(i)), infoFirstPerTrial{1}, T.roiData));
+                                end
+                                ref(:, :, p) = refSum / nRefFrames;
+                            end
+                        end
+                    end
+                    if nPl > 1
+                        appendToStatusTimed(sprintf('Built motion-correction references (mean of first %d frames per plane, trial 1).', nRefFrames));
+                    else
+                        appendToStatusTimed(sprintf('Built motion-correction reference (mean of first %d frames, trial 1).', nRefFrames));
+                    end
+                end
                 if isMerge
                     avgMovie = zeros(H, W, 3, minTrialLength, 'double');
+                    nPlM = numel(planeList);
+                    if motionCorrect
+                        stepStart = tic; % includes read+stitch+sum+normalization
+                        mcTime = 0;      % counts time spent inside applyMotionCorrect_TIFF only
+                    end
                     for i = 1:minTrialLength
                         sumR = zeros(H, W, 'double'); sumG = zeros(H, W, 'double');
                         for k = 1:numel(trialFilePaths)
-                            f1 = double(stitchFrame_TIFF(imread(trialFilePaths{k}, framesPerTrialCh1{k}(i)), infoFirstPerTrial{k}, T.roiData));
-                            f2 = double(stitchFrame_TIFF(imread(trialFilePaths{k}, framesPerTrialCh2{k}(i)), infoFirstPerTrial{k}, T.roiData));
-                            if numel(planeList) > 1
-                                for p = 2:numel(planeList)
-                                    fp1 = getFramesForPlaneChannel_TIFF(planeList(p), 1, numel(imfinfo(trialFilePaths{k})));
-                                    fp2 = getFramesForPlaneChannel_TIFF(planeList(p), 2, numel(imfinfo(trialFilePaths{k})));
-                                    f1 = f1 + double(stitchFrame_TIFF(imread(trialFilePaths{k}, fp1(i)), infoFirstPerTrial{k}, T.roiData));
-                                    f2 = f2 + double(stitchFrame_TIFF(imread(trialFilePaths{k}, fp2(i)), infoFirstPerTrial{k}, T.roiData));
+                            nFk = numel(imfinfo(trialFilePaths{k}));
+                            if nPlM == 1
+                                f1 = double(stitchFrame_TIFF(imread(trialFilePaths{k}, framesPerTrialCh1{k}(i)), infoFirstPerTrial{k}, T.roiData));
+                                f2 = double(stitchFrame_TIFF(imread(trialFilePaths{k}, framesPerTrialCh2{k}(i)), infoFirstPerTrial{k}, T.roiData));
+                                if motionCorrect, mcTic = tic; end
+                                f1 = applyMotionCorrect_TIFF(ref, f1, motionCorrect);
+                                f2 = applyMotionCorrect_TIFF(ref, f2, motionCorrect);
+                                if motionCorrect, mcTime = mcTime + toc(mcTic); end
+                            else
+                                f1 = 0; f2 = 0;
+                                if motionCorrect, mcTic = tic; end
+                                for p = 1:nPlM
+                                    fp1 = getFramesForPlaneChannel_TIFF(planeList(p), 1, nFk);
+                                    fp2 = getFramesForPlaneChannel_TIFF(planeList(p), 2, nFk);
+                                    f1 = f1 + applyMotionCorrect_TIFF(ref, double(stitchFrame_TIFF(imread(trialFilePaths{k}, fp1(i)), infoFirstPerTrial{k}, T.roiData)), motionCorrect, [], p);
+                                    f2 = f2 + applyMotionCorrect_TIFF(ref, double(stitchFrame_TIFF(imread(trialFilePaths{k}, fp2(i)), infoFirstPerTrial{k}, T.roiData)), motionCorrect, [], p);
                                 end
+                                if motionCorrect, mcTime = mcTime + toc(mcTic); end
                             end
                             sumR = sumR + f1; sumG = sumG + f2;
                         end
@@ -3256,30 +3356,65 @@ updateDisplayMode();
                         avgMovie(:,:,2,i) = min(1, max(0, g));
                         avgMovie(:,:,3,i) = 0;
                     end
+                    if motionCorrect
+                        totalTime = toc(stepStart);
+                        frameAvgTime = max(0, totalTime - mcTime);
+                        appendToStatus(sprintf('Frame averaging [%.2fs]', frameAvgTime));
+                        appendToStatus(sprintf('Motion correction registration [%.2fs]', mcTime));
+                    end
                 else
                     if numel(planeList) > 1
                         avgMovie = zeros(H, W, numel(planeList), minTrialLength, 'double');
+                        if motionCorrect
+                            stepStart = tic;
+                            mcTime = 0;
+                        end
                         for i = 1:minTrialLength
                             for p = 1:numel(planeList)
                                 sumFrame = zeros(H, W, 'double');
                                 for k = 1:numel(trialFilePaths)
                                     fp = framesPerTrialPerPlane{k};
-                                    sumFrame = sumFrame + double(stitchFrame_TIFF(imread(trialFilePaths{k}, fp{p}(i)), infoFirstPerTrial{k}, T.roiData));
+                                    if motionCorrect, mcTic = tic; end
+                                    mcFrame = applyMotionCorrect_TIFF(ref, double(stitchFrame_TIFF(imread(trialFilePaths{k}, fp{p}(i)), infoFirstPerTrial{k}, T.roiData)), motionCorrect, [], p);
+                                    if motionCorrect, mcTime = mcTime + toc(mcTic); end
+                                    sumFrame = sumFrame + mcFrame;
                                 end
                                 avgMovie(:,:,p,i) = sumFrame / numel(trialFilePaths);
                             end
                         end
+                        if motionCorrect
+                            totalTime = toc(stepStart);
+                            frameAvgTime = max(0, totalTime - mcTime);
+                            appendToStatus(sprintf('Frame averaging [%.2fs]', frameAvgTime));
+                            appendToStatus(sprintf('Motion correction registration [%.2fs]', mcTime));
+                        end
                     else
                         avgMovie = zeros(H, W, minTrialLength, 'double');
+                        if motionCorrect
+                            stepStart = tic;
+                            mcTime = 0;
+                        end
                         for i = 1:minTrialLength
                             sumFrame = zeros(H, W, 'double');
                             for k = 1:numel(trialFilePaths)
                                 fp = framesPerTrialPerPlane{k};
-                                sumFrame = sumFrame + double(stitchFrame_TIFF(imread(trialFilePaths{k}, fp{1}(i)), infoFirstPerTrial{k}, T.roiData));
+                                if motionCorrect, mcTic = tic; end
+                                mcFrame = applyMotionCorrect_TIFF(ref, double(stitchFrame_TIFF(imread(trialFilePaths{k}, fp{1}(i)), infoFirstPerTrial{k}, T.roiData)), motionCorrect);
+                                if motionCorrect, mcTime = mcTime + toc(mcTic); end
+                                sumFrame = sumFrame + mcFrame;
                             end
                             avgMovie(:,:,i) = sumFrame / numel(trialFilePaths);
                         end
+                        if motionCorrect
+                            totalTime = toc(stepStart);
+                            frameAvgTime = max(0, totalTime - mcTime);
+                            appendToStatus(sprintf('Frame averaging [%.2fs]', frameAvgTime));
+                            appendToStatus(sprintf('Motion correction registration [%.2fs]', mcTime));
+                        end
                     end
+                end
+                if ~motionCorrect
+                    appendToStatusTimed(sprintf('Folder TIFF complete (%d trials, %d timepoints per trial).', numel(trialFilePaths), minTrialLength));
                 end
             else
                 info = imfinfo(T.fullFilePath);
@@ -3299,16 +3434,86 @@ updateDisplayMode();
                 end
                 firstFrame = stitchFrame_TIFF(imread(T.fullFilePath, 1), info(1), T.roiData);
                 [H, W] = size(firstFrame);
+                if motionCorrect
+                    nPlF = numel(planeList);
+                    if isMerge
+                        nRefFrames = min(50, nT);
+                        if nPlF == 1
+                            refSum = zeros(H, W, 'double');
+                            for i = 1:nRefFrames
+                                f = double(stitchFrame_TIFF(imread(T.fullFilePath, allF1(i)), info(1), T.roiData));
+                                refSum = refSum + f;
+                            end
+                            ref = refSum / nRefFrames;
+                        else
+                            ref = zeros(H, W, nPlF, 'double');
+                            for p = 1:nPlF
+                                refSum = zeros(H, W, 'double');
+                                for i = 1:nRefFrames
+                                    fp1 = getFramesForPlaneChannel_TIFF(planeList(p), 1, nF);
+                                    refSum = refSum + double(stitchFrame_TIFF(imread(T.fullFilePath, fp1(i)), info(1), T.roiData));
+                                end
+                                ref(:, :, p) = refSum / nRefFrames;
+                            end
+                        end
+                    else
+                        if nPlF == 1
+                            allFramesRef = getFramesForPlaneChannel_TIFF(planeList(1), channelNum, nF);
+                            nRefFrames = min(50, numel(allFramesRef));
+                            refSum = zeros(H, W, 'double');
+                            for i = 1:nRefFrames
+                                refSum = refSum + double(stitchFrame_TIFF(imread(T.fullFilePath, allFramesRef(i)), info(1), T.roiData));
+                            end
+                            ref = refSum / nRefFrames;
+                        else
+                            ref = zeros(H, W, nPlF, 'double');
+                            for p = 1:nPlF
+                                fpRef = getFramesForPlaneChannel_TIFF(planeList(p), channelNum, nF);
+                                nRefFrames = min(50, numel(fpRef));
+                                refSum = zeros(H, W, 'double');
+                                for i = 1:nRefFrames
+                                    refSum = refSum + double(stitchFrame_TIFF(imread(T.fullFilePath, fpRef(i)), info(1), T.roiData));
+                                end
+                                ref(:, :, p) = refSum / nRefFrames;
+                            end
+                        end
+                    end
+                    if nPlF > 1
+                        appendToStatusTimed('Built motion-correction references (mean of first frames per plane).');
+                    else
+                        appendToStatusTimed(sprintf('Built motion-correction reference (mean of first %d frames).', nRefFrames));
+                    end
+                end
+                % Time split (motion registration vs stack build) for MC-on case.
+                if motionCorrect
+                    singleStackStartTic = tic; % excludes reference-building time
+                    singleMcTime = 0;         % accumulates time inside applyMotionCorrect_TIFF calls
+                end
                 if isMerge
                     avgMovie = zeros(H, W, 3, nT, 'double');
+                    nPlFM = numel(planeList);
                     for i = 1:nT
-                        f1 = double(stitchFrame_TIFF(imread(T.fullFilePath, allF1(i)), info(1), T.roiData));
-                        f2 = double(stitchFrame_TIFF(imread(T.fullFilePath, allF2(i)), info(1), T.roiData));
-                        for p = 2:numel(planeList)
-                            fp1 = getFramesForPlaneChannel_TIFF(planeList(p), 1, nF);
-                            fp2 = getFramesForPlaneChannel_TIFF(planeList(p), 2, nF);
-                            f1 = f1 + double(stitchFrame_TIFF(imread(T.fullFilePath, fp1(i)), info(1), T.roiData));
-                            f2 = f2 + double(stitchFrame_TIFF(imread(T.fullFilePath, fp2(i)), info(1), T.roiData));
+                        if nPlFM == 1
+                            if motionCorrect, mcTic = tic; end
+                            f1 = applyMotionCorrect_TIFF(ref, double(stitchFrame_TIFF(imread(T.fullFilePath, allF1(i)), info(1), T.roiData)), motionCorrect);
+                            if motionCorrect, singleMcTime = singleMcTime + toc(mcTic); end
+                            if motionCorrect, mcTic = tic; end
+                            f2 = applyMotionCorrect_TIFF(ref, double(stitchFrame_TIFF(imread(T.fullFilePath, allF2(i)), info(1), T.roiData)), motionCorrect);
+                            if motionCorrect, singleMcTime = singleMcTime + toc(mcTic); end
+                        else
+                            f1 = 0; f2 = 0;
+                            for p = 1:nPlFM
+                                fp1 = getFramesForPlaneChannel_TIFF(planeList(p), 1, nF);
+                                fp2 = getFramesForPlaneChannel_TIFF(planeList(p), 2, nF);
+                                if motionCorrect, mcTic = tic; end
+                                tmp1 = applyMotionCorrect_TIFF(ref, double(stitchFrame_TIFF(imread(T.fullFilePath, fp1(i)), info(1), T.roiData)), motionCorrect, [], p);
+                                if motionCorrect, singleMcTime = singleMcTime + toc(mcTic); end
+                                f1 = f1 + tmp1;
+                                if motionCorrect, mcTic = tic; end
+                                tmp2 = applyMotionCorrect_TIFF(ref, double(stitchFrame_TIFF(imread(T.fullFilePath, fp2(i)), info(1), T.roiData)), motionCorrect, [], p);
+                                if motionCorrect, singleMcTime = singleMcTime + toc(mcTic); end
+                                f2 = f2 + tmp2;
+                            end
                         end
                         pr = prctile(f1(:), [1 99]); pg = prctile(f2(:), [1 99]);
                         avgMovie(:,:,1,i) = min(1, max(0, (f1 - pr(1)) / (diff(pr) + eps)));
@@ -3325,18 +3530,31 @@ updateDisplayMode();
                         for i = 1:numel(allFrames)
                             for p = 1:numel(planeList)
                                 fp = getFramesForPlaneChannel_TIFF(planeList(p), channelNum, nF);
-                                avgMovie(:,:,p,i) = double(stitchFrame_TIFF(imread(T.fullFilePath, fp(i)), info(1), T.roiData));
+                                if motionCorrect, mcTic = tic; end
+                                tmp = applyMotionCorrect_TIFF(ref, double(stitchFrame_TIFF(imread(T.fullFilePath, fp(i)), info(1), T.roiData)), motionCorrect, [], p);
+                                if motionCorrect, singleMcTime = singleMcTime + toc(mcTic); end
+                                avgMovie(:,:,p,i) = tmp;
                             end
                         end
                     else
                         avgMovie = zeros(H, W, numel(allFrames), 'double');
                         for i = 1:numel(allFrames)
-                            sumFrame = zeros(H, W, 'double');
                             fp = getFramesForPlaneChannel_TIFF(planeList(1), channelNum, nF);
-                            sumFrame = double(stitchFrame_TIFF(imread(T.fullFilePath, fp(i)), info(1), T.roiData));
+                            if motionCorrect, mcTic = tic; end
+                            sumFrame = applyMotionCorrect_TIFF(ref, double(stitchFrame_TIFF(imread(T.fullFilePath, fp(i)), info(1), T.roiData)), motionCorrect);
+                            if motionCorrect, singleMcTime = singleMcTime + toc(mcTic); end
                             avgMovie(:,:,i) = sumFrame;
                         end
                     end
+                end
+                nFramesOut = size(avgMovie, ndims(avgMovie));
+                if motionCorrect
+                    totalStackTime = toc(singleStackStartTic);
+                    frameAvgTime = max(0, totalStackTime - singleMcTime);
+                    appendToStatus(sprintf('Single-file TIFF stack complete [%.2fs] (%d frames).', frameAvgTime, nFramesOut));
+                    appendToStatus(sprintf('Motion correction registration [%.2fs] (%d frames).', singleMcTime, nFramesOut));
+                else
+                    appendToStatusTimed(sprintf('Single-file TIFF stack complete (%d frames).', nFramesOut));
                 end
             end
             success = true;
@@ -3348,6 +3566,68 @@ updateDisplayMode();
         startFrame = (plane - 1) * T.parsedNumChannels + channel;
         frameStep = T.parsedNumPlanes * T.parsedNumChannels;
         frames = startFrame:frameStep:totalFrames;
+    end
+
+    function [dy, dx] = getPhaseCorrShift_TIFF(ref, img, maxShiftPx)
+        % Phase correlation for 2D translation. Returns subpixel [dy, dx]. Optionally clamp to maxShiftPx.
+        ref = double(ref); img = double(img);
+        % Clip to percentile range to reduce hot pixels / outliers
+        pr = prctile(ref(:), [1 99]); ref = min(max(ref, pr(1)), pr(2));
+        pr = prctile(img(:), [1 99]); img = min(max(img, pr(1)), pr(2));
+        ref = ref - mean(ref(:)); img = img - mean(img(:));
+        sigRef = std(ref(:)); sigImg = std(img(:));
+        if (sigRef > 1e-10), ref = ref / sigRef; end
+        if (sigImg > 1e-10), img = img / sigImg; end
+        F_ref = fft2(ref); F_img = fft2(img);
+        C = F_ref .* conj(F_img);
+        C = C ./ (abs(C) + 1e-10);
+        r = real(ifft2(C));
+        [~, idx] = max(r(:));
+        [iy, ix] = ind2sub(size(r), idx);
+        Ly = size(r, 1); Lx = size(r, 2);
+        % Subpixel refinement: parabolic fit in 3x3 neighborhood (reduces residual jitter)
+        ix_sub = double(ix); iy_sub = double(iy);
+        if ix > 1 && ix < Lx
+            v = r(iy, ix-1); c = r(iy, ix); w = r(iy, ix+1);
+            denom = 2 * (v - 2*c + w + 1e-12);
+            if abs(denom) > 1e-12
+                delta = (v - w) / denom;
+                delta = max(-0.5, min(0.5, delta));
+                ix_sub = ix + delta;
+            end
+        end
+        if iy > 1 && iy < Ly
+            v = r(iy-1, ix); c = r(iy, ix); w = r(iy+1, ix);
+            denom = 2 * (v - 2*c + w + 1e-12);
+            if abs(denom) > 1e-12
+                delta = (v - w) / denom;
+                delta = max(-0.5, min(0.5, delta));
+                iy_sub = iy + delta;
+            end
+        end
+        dy = iy_sub - 1; dx = ix_sub - 1;
+        if dy > Ly/2, dy = dy - Ly; end
+        if dx > Lx/2, dx = dx - Lx; end
+        if nargin >= 3 && ~isempty(maxShiftPx) && maxShiftPx > 0
+            dy = max(-maxShiftPx, min(maxShiftPx, dy));
+            dx = max(-maxShiftPx, min(maxShiftPx, dx));
+        end
+    end
+
+    function frameOut = applyMotionCorrect_TIFF(ref, frame, doMC, maxShiftPx, planeIdx)
+        if ~doMC, frameOut = frame; return; end
+        if nargin < 4, maxShiftPx = 25; end  % allow slightly larger corrections; subpixel keeps it smooth
+        if nargin < 5, planeIdx = []; end
+        % Multi-plane (Plane=All): ref is H x W x P; each plane registers to its own mean reference.
+        if ndims(ref) >= 3 && size(ref, 3) > 1
+            if isempty(planeIdx), planeIdx = 1; end
+            refUse = ref(:, :, planeIdx);
+        else
+            refUse = ref;
+        end
+        [dy, dx] = getPhaseCorrShift_TIFF(refUse, frame, maxShiftPx);
+        % Apply shift: both signs for MATLAB imtranslate/FFT convention; imtranslate interpolates for subpixel
+        frameOut = imtranslate(frame, [dx, dy], 'OutputView', 'same');
     end
 
     function [pixelWidth, pixelHeight, physicalWidth, physicalHeight] = getStitchDimensions_TIFF(si_rois, zoom)
@@ -3488,7 +3768,6 @@ updateDisplayMode();
             F_processed = N.psthsData - c * N.psthsnpData;
             
             if get(hDetrendCheckbox, 'Value')
-                appendToStatus('Detrending data...');
                 win_min = str2double(get(hDetrendWindowInput, 'String'));
                 if isnan(win_min) || win_min <=0, error('Invalid detrend window.'); end
                 
@@ -3497,7 +3776,7 @@ updateDisplayMode();
                 if isfield(N,'nativeFrameRate') && ~isempty(N.nativeFrameRate) && isfinite(N.nativeFrameRate) && N.nativeFrameRate > 0
                     nativeFR = N.nativeFrameRate;
                 else
-                    appendToStatus('Native frame rate missing; assuming 1 Hz for detrend window.');
+                    appendToStatusTimed('Native frame rate missing; assuming 1 Hz for detrend window.');
                 end
                 win_frames = max(1, round(win_min * 60 * nativeFR));
                 
@@ -3507,6 +3786,7 @@ updateDisplayMode();
                 F_movmedian = movmedian(F_reshaped, win_frames, 2);
                 F_detrended_reshaped = F_reshaped - F_movmedian;
                 F_processed = reshape(F_detrended_reshaped, nNeurons, nTimepoints, nTrials);
+                appendToStatusTimed('Detrended full session (movmedian).');
             end
             
             if get(hForcePositiveCheckbox, 'Value')
@@ -3514,7 +3794,7 @@ updateDisplayMode();
                 if session_min <= 0
                     offset = -session_min + eps;
                     F_processed = F_processed + offset;
-                    appendToStatus(sprintf('Data shifted by %.2f to ensure positive baseline.', offset));
+                    appendToStatusTimed(sprintf('Shifted data by %.2f to ensure positive baseline.', offset));
                 end
             end
             success = true;
@@ -3569,17 +3849,17 @@ updateDisplayMode();
                 selectedTrials = find(selectedTrials);
             end
             if ~isnumeric(selectedTrials)
-                appendToStatus('Invalid trial selection string; defaulting to all trials.');
+                appendToStatusTimed('Invalid trial selection string; defaulting to all trials.');
                 selectedTrials = 1:nTrials;
             end
             selectedTrials = unique(round(selectedTrials(:)'));
             selectedTrials = selectedTrials(selectedTrials >= 1 & selectedTrials <= nTrials);
             if isempty(selectedTrials)
-                appendToStatus('Empty/invalid trial selection; defaulting to all trials.');
+                appendToStatusTimed('Empty/invalid trial selection; defaulting to all trials.');
                 selectedTrials = 1:nTrials;
             end
-            appendToStatus(sprintf('Averaging %d trials...', numel(selectedTrials)));
             avgData = mean(F_session_processed(:, :, selectedTrials), 3);
+            appendToStatusTimed(sprintf('Averaged %d neural trials.', numel(selectedTrials)));
             success = true;
         catch ME, errMsg = sprintf('Trial Averaging Error:\n%s', ME.message); end
     end
