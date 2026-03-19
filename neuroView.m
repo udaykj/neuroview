@@ -3273,31 +3273,32 @@ updateDisplayMode();
                 [H, W] = size(firstFrame);
                 if motionCorrect
                     nRefFrames = min(50, minTrialLength);
+                    refOrdinals = getUniformSampleIdx_TIFF(minTrialLength, nRefFrames);
                     nPl = numel(planeList);
                     if isMerge
                         if nPl == 1
-                            fetchRef = @(ii) double(stitchFrame_TIFF(imread(trialFilePaths{1}, framesPerTrialCh1{1}(ii)), infoFirstPerTrial{1}, T.roiData));
-                            ref = buildRobustReference_TIFF(fetchRef, nRefFrames);
+                            fetchRef = @(ord) double(stitchFrame_TIFF(imread(trialFilePaths{1}, framesPerTrialCh1{1}(ord)), infoFirstPerTrial{1}, T.roiData));
+                            ref = buildRobustReference_TIFF(fetchRef, refOrdinals);
                         else
                             ref = zeros(H, W, nPl, 'double');
                             for p = 1:nPl
                                 nF1 = numel(imfinfo(trialFilePaths{1}));
                                 fp1 = getFramesForPlaneChannel_TIFF(planeList(p), 1, nF1);
-                                fetchRef = @(ii) double(stitchFrame_TIFF(imread(trialFilePaths{1}, fp1(ii)), infoFirstPerTrial{1}, T.roiData));
-                                ref(:, :, p) = buildRobustReference_TIFF(fetchRef, nRefFrames);
+                                fetchRef = @(ord) double(stitchFrame_TIFF(imread(trialFilePaths{1}, fp1(ord)), infoFirstPerTrial{1}, T.roiData));
+                                ref(:, :, p) = buildRobustReference_TIFF(fetchRef, refOrdinals);
                             end
                         end
                     else
                         if nPl == 1
                             fp = framesPerTrialPerPlane{1};
-                            fetchRef = @(ii) double(stitchFrame_TIFF(imread(trialFilePaths{1}, fp{1}(ii)), infoFirstPerTrial{1}, T.roiData));
-                            ref = buildRobustReference_TIFF(fetchRef, nRefFrames);
+                            fetchRef = @(ord) double(stitchFrame_TIFF(imread(trialFilePaths{1}, fp{1}(ord)), infoFirstPerTrial{1}, T.roiData));
+                            ref = buildRobustReference_TIFF(fetchRef, refOrdinals);
                         else
                             ref = zeros(H, W, nPl, 'double');
                             for p = 1:nPl
                                 fp = framesPerTrialPerPlane{1};
-                                fetchRef = @(ii) double(stitchFrame_TIFF(imread(trialFilePaths{1}, fp{p}(ii)), infoFirstPerTrial{1}, T.roiData));
-                                ref(:, :, p) = buildRobustReference_TIFF(fetchRef, nRefFrames);
+                                fetchRef = @(ord) double(stitchFrame_TIFF(imread(trialFilePaths{1}, fp{p}(ord)), infoFirstPerTrial{1}, T.roiData));
+                                ref(:, :, p) = buildRobustReference_TIFF(fetchRef, refOrdinals);
                             end
                         end
                     end
@@ -3427,30 +3428,33 @@ updateDisplayMode();
                     nPlF = numel(planeList);
                     if isMerge
                         nRefFrames = min(50, nT);
+                        refOrdinals = getUniformSampleIdx_TIFF(nT, nRefFrames);
                         if nPlF == 1
-                            fetchRef = @(ii) double(stitchFrame_TIFF(imread(T.fullFilePath, allF1(ii)), info(1), T.roiData));
-                            ref = buildRobustReference_TIFF(fetchRef, nRefFrames);
+                            fetchRef = @(ord) double(stitchFrame_TIFF(imread(T.fullFilePath, allF1(ord)), info(1), T.roiData));
+                            ref = buildRobustReference_TIFF(fetchRef, refOrdinals);
                         else
                             ref = zeros(H, W, nPlF, 'double');
                             for p = 1:nPlF
                                 fp1 = getFramesForPlaneChannel_TIFF(planeList(p), 1, nF);
-                                fetchRef = @(ii) double(stitchFrame_TIFF(imread(T.fullFilePath, fp1(ii)), info(1), T.roiData));
-                                ref(:, :, p) = buildRobustReference_TIFF(fetchRef, nRefFrames);
+                                fetchRef = @(ord) double(stitchFrame_TIFF(imread(T.fullFilePath, fp1(ord)), info(1), T.roiData));
+                                ref(:, :, p) = buildRobustReference_TIFF(fetchRef, refOrdinals);
                             end
                         end
                     else
                         if nPlF == 1
                             allFramesRef = getFramesForPlaneChannel_TIFF(planeList(1), channelNum, nF);
                             nRefFrames = min(50, numel(allFramesRef));
-                            fetchRef = @(ii) double(stitchFrame_TIFF(imread(T.fullFilePath, allFramesRef(ii)), info(1), T.roiData));
-                            ref = buildRobustReference_TIFF(fetchRef, nRefFrames);
+                            refOrdinals = getUniformSampleIdx_TIFF(numel(allFramesRef), nRefFrames);
+                            fetchRef = @(ord) double(stitchFrame_TIFF(imread(T.fullFilePath, allFramesRef(ord)), info(1), T.roiData));
+                            ref = buildRobustReference_TIFF(fetchRef, refOrdinals);
                         else
                             ref = zeros(H, W, nPlF, 'double');
                             for p = 1:nPlF
                                 fpRef = getFramesForPlaneChannel_TIFF(planeList(p), channelNum, nF);
                                 nRefFrames = min(50, numel(fpRef));
-                                fetchRef = @(ii) double(stitchFrame_TIFF(imread(T.fullFilePath, fpRef(ii)), info(1), T.roiData));
-                                ref(:, :, p) = buildRobustReference_TIFF(fetchRef, nRefFrames);
+                                refOrdinals = getUniformSampleIdx_TIFF(numel(fpRef), nRefFrames);
+                                fetchRef = @(ord) double(stitchFrame_TIFF(imread(T.fullFilePath, fpRef(ord)), info(1), T.roiData));
+                                ref(:, :, p) = buildRobustReference_TIFF(fetchRef, refOrdinals);
                             end
                         end
                     end
@@ -3544,20 +3548,31 @@ updateDisplayMode();
         frames = startFrame:frameStep:totalFrames;
     end
 
-    function ref = buildRobustReference_TIFF(fetchFrameFcn, nRefFrames)
+    function ord = getUniformSampleIdx_TIFF(nTotal, nSamples)
+        if nTotal < 1 || nSamples < 1
+            ord = 1;
+            return;
+        end
+        nSamples = min(nSamples, nTotal);
+        ord = unique(max(1, min(nTotal, round(linspace(1, nTotal, nSamples)))));
+        if isempty(ord), ord = 1; end
+    end
+
+    function ref = buildRobustReference_TIFF(fetchFrameFcn, sampleOrdinals)
         % Build a robust reference in two passes:
-        % 1) Mean of first frames.
+        % 1) Mean of sampled frames.
         % 2) Re-register those frames to pass-1 mean and re-average.
+        nRefFrames = numel(sampleOrdinals);
         if nRefFrames < 1
             ref = [];
             return;
         end
-        f1 = fetchFrameFcn(1);
+        f1 = fetchFrameFcn(sampleOrdinals(1));
         [H, W] = size(f1);
         stack = zeros(H, W, nRefFrames, 'double');
         stack(:,:,1) = double(f1);
         for ii = 2:nRefFrames
-            stack(:,:,ii) = double(fetchFrameFcn(ii));
+            stack(:,:,ii) = double(fetchFrameFcn(sampleOrdinals(ii)));
         end
         ref0 = mean(stack, 3);
         alignedSum = zeros(H, W, 'double');
