@@ -2724,7 +2724,7 @@ updateDisplayMode();
             ui.maxFrames = get(hMaxFramesInput, 'String');
             ui.motionCorrect = get(hMotionCorrectCheckbox, 'Value');
             % Bump this token whenever motion-correction internals change to avoid stale cache reuse.
-            ui.motionCorrectAlgoVersion = 'mc_robust_refine_v1';
+            ui.motionCorrectAlgoVersion = 'mc_robust_refine_v3_refround5';
         else
             ui.neuropilCoeff = get(hNeuropilCoeffInput, 'String');
             ui.detrend = get(hDetrendCheckbox, 'Value');
@@ -3272,7 +3272,9 @@ updateDisplayMode();
                 firstFrame = stitchFrame_TIFF(imread(trialFilePaths{1}, 1), infoFirstPerTrial{1}, T.roiData);
                 [H, W] = size(firstFrame);
                 if motionCorrect
-                    nRefFrames = min(50, minTrialLength);
+                    mcFr = T.nativeFrameRate;
+                    if ~isscalar(mcFr) || ~isfinite(mcFr) || mcFr <= 0, mcFr = 30; end
+                    nRefFrames = getMcRefSampleCount_TIFF(mcFr, 5, minTrialLength);
                     refOrdinals = getUniformSampleIdx_TIFF(minTrialLength, nRefFrames);
                     nPl = numel(planeList);
                     if isMerge
@@ -3303,9 +3305,9 @@ updateDisplayMode();
                         end
                     end
                     if nPl > 1
-                        appendToStatusTimed(sprintf('Built motion-correction references (mean of first %d frames per plane, trial 1).', nRefFrames));
+                        appendToStatusTimed(sprintf('Built motion-correction references (uniform sample of %d frames per plane, trial 1).', nRefFrames));
                     else
-                        appendToStatusTimed(sprintf('Built motion-correction reference (mean of first %d frames, trial 1).', nRefFrames));
+                        appendToStatusTimed(sprintf('Built motion-correction reference (uniform sample of %d frames, trial 1).', nRefFrames));
                     end
                 end
                 if isMerge
@@ -3426,8 +3428,10 @@ updateDisplayMode();
                 [H, W] = size(firstFrame);
                 if motionCorrect
                     nPlF = numel(planeList);
+                    mcFr = T.nativeFrameRate;
+                    if ~isscalar(mcFr) || ~isfinite(mcFr) || mcFr <= 0, mcFr = 30; end
                     if isMerge
-                        nRefFrames = min(50, nT);
+                        nRefFrames = getMcRefSampleCount_TIFF(mcFr, 2, nT);
                         refOrdinals = getUniformSampleIdx_TIFF(nT, nRefFrames);
                         if nPlF == 1
                             fetchRef = @(ord) double(stitchFrame_TIFF(imread(T.fullFilePath, allF1(ord)), info(1), T.roiData));
@@ -3443,7 +3447,7 @@ updateDisplayMode();
                     else
                         if nPlF == 1
                             allFramesRef = getFramesForPlaneChannel_TIFF(planeList(1), channelNum, nF);
-                            nRefFrames = min(50, numel(allFramesRef));
+                            nRefFrames = getMcRefSampleCount_TIFF(mcFr, 2, numel(allFramesRef));
                             refOrdinals = getUniformSampleIdx_TIFF(numel(allFramesRef), nRefFrames);
                             fetchRef = @(ord) double(stitchFrame_TIFF(imread(T.fullFilePath, allFramesRef(ord)), info(1), T.roiData));
                             ref = buildRobustReference_TIFF(fetchRef, refOrdinals);
@@ -3451,7 +3455,7 @@ updateDisplayMode();
                             ref = zeros(H, W, nPlF, 'double');
                             for p = 1:nPlF
                                 fpRef = getFramesForPlaneChannel_TIFF(planeList(p), channelNum, nF);
-                                nRefFrames = min(50, numel(fpRef));
+                                nRefFrames = getMcRefSampleCount_TIFF(mcFr, 2, numel(fpRef));
                                 refOrdinals = getUniformSampleIdx_TIFF(numel(fpRef), nRefFrames);
                                 fetchRef = @(ord) double(stitchFrame_TIFF(imread(T.fullFilePath, fpRef(ord)), info(1), T.roiData));
                                 ref(:, :, p) = buildRobustReference_TIFF(fetchRef, refOrdinals);
@@ -3459,9 +3463,9 @@ updateDisplayMode();
                         end
                     end
                     if nPlF > 1
-                        appendToStatusTimed('Built motion-correction references (mean of first frames per plane).');
+                        appendToStatusTimed(sprintf('Built motion-correction references (uniform sample of %d frames per plane).', nRefFrames));
                     else
-                        appendToStatusTimed(sprintf('Built motion-correction reference (mean of first %d frames).', nRefFrames));
+                        appendToStatusTimed(sprintf('Built motion-correction reference (uniform sample of %d frames).', nRefFrames));
                     end
                 end
                 % Time split (motion registration vs stack build) for MC-on case.
@@ -3556,6 +3560,31 @@ updateDisplayMode();
         nSamples = min(nSamples, nTotal);
         ord = unique(max(1, min(nTotal, round(linspace(1, nTotal, nSamples)))));
         if isempty(ord), ord = 1; end
+    end
+
+    function nRef = getMcRefSampleCount_TIFF(frHz, secondsWorth, nAvail)
+        % Motion-correction reference: target = secondsWorth * frHz (rounded to int), then
+        % rounded to nearest multiple of 5; capped by nAvail; at least 1 frame if any avail.
+        % frHz defaults to 30 if missing/invalid.
+        if nargin < 3 || isempty(nAvail) || ~isfinite(nAvail)
+            nAvail = 1;
+        end
+        nAvail = max(1, round(nAvail));
+        if nargin < 1 || isempty(frHz) || ~isscalar(frHz) || ~isfinite(frHz) || frHz <= 0
+            frHz = 30;
+        end
+        if nargin < 2 || isempty(secondsWorth) || ~isscalar(secondsWorth) || ~isfinite(secondsWorth) || secondsWorth <= 0
+            secondsWorth = 2;
+        end
+        nIdeal = round(secondsWorth * frHz);
+        nRound5 = round(nIdeal / 5) * 5;
+        if nRound5 < 1
+            nRound5 = 5;
+        end
+        nRef = min(nAvail, nRound5);
+        if nRef < 1
+            nRef = 1;
+        end
     end
 
     function ref = buildRobustReference_TIFF(fetchFrameFcn, sampleOrdinals)
