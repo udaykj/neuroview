@@ -96,7 +96,7 @@ uicontrol('Parent', hTiffLoadPanel, 'Style', 'pushbutton', 'String', 'Load State
     'Position', [295 40 125 30], 'FontSize', 10, 'Callback', @loadStateCallback);
 hMotionCorrectCheckbox = uicontrol('Parent', hTiffLoadPanel, 'Style', 'checkbox', 'String', 'Motion correct', ...
     'Position', [10 10 120 20], 'Value', 0, 'BackgroundColor', [0.94 0.94 0.94], ...
-    'TooltipString', 'Register frames to first frame (phase correlation) before averaging/playback');
+    'TooltipString', 'Phase-correlation registration + subpixel shift; mild FFT denoise + unsharp after shift only');
 hReloadDataCheckbox_Tiff = uicontrol('Parent', hTiffLoadPanel, 'Style', 'checkbox', 'String', 'Reload raw data', ...
     'Position', [295 10 130 20], 'Value', 0, 'BackgroundColor', [0.94 0.94 0.94]);
 
@@ -2724,7 +2724,7 @@ updateDisplayMode();
             ui.maxFrames = get(hMaxFramesInput, 'String');
             ui.motionCorrect = get(hMotionCorrectCheckbox, 'Value');
             % Bump this token whenever motion-correction internals change to avoid stale cache reuse.
-            ui.motionCorrectAlgoVersion = 'mc_robust_refine_v3_refround5';
+            ui.motionCorrectAlgoVersion = 'mc_robust_refine_v5_mcfixonly';
         else
             ui.neuropilCoeff = get(hNeuropilCoeffInput, 'String');
             ui.detrend = get(hDetrendCheckbox, 'Value');
@@ -3606,7 +3606,7 @@ updateDisplayMode();
         ref0 = mean(stack, 3);
         alignedSum = zeros(H, W, 'double');
         for ii = 1:nRefFrames
-            alignedSum = alignedSum + applyMotionCorrect_TIFF(ref0, stack(:,:,ii), true);
+            alignedSum = alignedSum + applyMotionCorrect_TIFF(ref0, stack(:,:,ii), true, [], [], true);
         end
         ref = alignedSum / nRefFrames;
     end
@@ -3668,8 +3668,48 @@ updateDisplayMode();
         end
     end
 
-    function frameOut = applyMotionCorrect_TIFF(ref, frame, doMC, maxShiftPx, planeIdx)
-        if ~doMC, frameOut = frame; return; end
+    function frameOut = mcPostSubpixelInterp_TIFF(img)
+        % After imtranslate subpixel shift only: fixed mild Wiener-style FFT denoise, then unsharp
+        % matched ~to cubic interpolation blur. Skipped for reference-building (registerOnly) path.
+        frameOut = img;
+        if isempty(img) || ~all(isfinite(img(:))), return; end
+        d = double(img);
+        mu = mean(d(:));
+        x = d - mu;
+        if ~all(x(:) == 0)
+            F = fft2(x);
+            P = abs(F).^2;
+            [H, W] = size(x);
+            [gy, gx] = ndgrid(1:H, 1:W);
+            fy = min(gy - 1, H - gy + 1); fx = min(gx - 1, W - gx + 1);
+            rho = hypot(double(fy) / (H / 2 + eps), double(fx) / (W / 2 + eps));
+            highMask = rho > 0.52 & rho <= 1;
+            if ~any(highMask(:))
+                noiseVar = eps * max(P(:));
+            else
+                noiseVar = median(P(highMask));
+            end
+            if ~isfinite(noiseVar) || noiseVar <= 0
+                noiseVar = eps * max(P(:));
+            end
+            % Fixed mild denoise (single extra fft2/ifft2 per MC frame)
+            lambda = noiseVar * 0.28;
+            F = F .* (P ./ (P + lambda));
+            d = real(ifft2(F)) + mu;
+        end
+        % Unsharp: Gaussian sigma ~ interpolation PSF width; amount compensates HF loss
+        sigmaUnsharp = 0.58;
+        amountUnsharp = 0.52;
+        lo = imgaussfilt(d, sigmaUnsharp);
+        frameOut = d + amountUnsharp .* (d - lo);
+    end
+
+    function frameOut = applyMotionCorrect_TIFF(ref, frame, doMC, maxShiftPx, planeIdx, registerOnly)
+        if nargin < 6 || isempty(registerOnly), registerOnly = false; end
+        if ~doMC
+            frameOut = frame;
+            return;
+        end
         if nargin < 4, maxShiftPx = 25; end  % allow slightly larger corrections; subpixel keeps it smooth
         if nargin < 5, planeIdx = []; end
         % Multi-plane (Plane=All): ref is H x W x P; each plane registers to its own mean reference.
@@ -3682,6 +3722,9 @@ updateDisplayMode();
         [dy, dx] = getPhaseCorrShift_TIFF(refUse, frame, maxShiftPx);
         % Apply shift: both signs for MATLAB imtranslate/FFT convention.
         frameOut = imtranslate(frame, [dx, dy], 'OutputView', 'same');
+        if ~registerOnly
+            frameOut = mcPostSubpixelInterp_TIFF(frameOut);
+        end
     end
 
     function [pixelWidth, pixelHeight, physicalWidth, physicalHeight] = getStitchDimensions_TIFF(si_rois, zoom)
