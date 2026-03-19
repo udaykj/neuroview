@@ -3342,8 +3342,9 @@ updateDisplayMode();
                                 for p = 1:nPlM
                                     fp1 = getFramesForPlaneChannel_TIFF(planeList(p), 1, nFk);
                                     fp2 = getFramesForPlaneChannel_TIFF(planeList(p), 2, nFk);
-                                    f1 = f1 + applyMotionCorrect_TIFF(ref, double(stitchFrame_TIFF(imread(trialFilePaths{k}, fp1(i)), infoFirstPerTrial{k}, T.roiData)), motionCorrect, [], p);
-                                    f2 = f2 + applyMotionCorrect_TIFF(ref, double(stitchFrame_TIFF(imread(trialFilePaths{k}, fp2(i)), infoFirstPerTrial{k}, T.roiData)), motionCorrect, [], p);
+                                    % Slice ref to guarantee correct plane-to-reference mapping.
+                                    f1 = f1 + applyMotionCorrect_TIFF(ref(:,:,p), double(stitchFrame_TIFF(imread(trialFilePaths{k}, fp1(i)), infoFirstPerTrial{k}, T.roiData)), motionCorrect);
+                                    f2 = f2 + applyMotionCorrect_TIFF(ref(:,:,p), double(stitchFrame_TIFF(imread(trialFilePaths{k}, fp2(i)), infoFirstPerTrial{k}, T.roiData)), motionCorrect);
                                 end
                                 if motionCorrect, mcTime = mcTime + toc(mcTic); end
                             end
@@ -3375,7 +3376,7 @@ updateDisplayMode();
                                 for k = 1:numel(trialFilePaths)
                                     fp = framesPerTrialPerPlane{k};
                                     if motionCorrect, mcTic = tic; end
-                                    mcFrame = applyMotionCorrect_TIFF(ref, double(stitchFrame_TIFF(imread(trialFilePaths{k}, fp{p}(i)), infoFirstPerTrial{k}, T.roiData)), motionCorrect, [], p);
+                                    mcFrame = applyMotionCorrect_TIFF(ref(:,:,p), double(stitchFrame_TIFF(imread(trialFilePaths{k}, fp{p}(i)), infoFirstPerTrial{k}, T.roiData)), motionCorrect);
                                     if motionCorrect, mcTime = mcTime + toc(mcTic); end
                                     sumFrame = sumFrame + mcFrame;
                                 end
@@ -3506,11 +3507,11 @@ updateDisplayMode();
                                 fp1 = getFramesForPlaneChannel_TIFF(planeList(p), 1, nF);
                                 fp2 = getFramesForPlaneChannel_TIFF(planeList(p), 2, nF);
                                 if motionCorrect, mcTic = tic; end
-                                tmp1 = applyMotionCorrect_TIFF(ref, double(stitchFrame_TIFF(imread(T.fullFilePath, fp1(i)), info(1), T.roiData)), motionCorrect, [], p);
+                                tmp1 = applyMotionCorrect_TIFF(ref(:,:,p), double(stitchFrame_TIFF(imread(T.fullFilePath, fp1(i)), info(1), T.roiData)), motionCorrect);
                                 if motionCorrect, singleMcTime = singleMcTime + toc(mcTic); end
                                 f1 = f1 + tmp1;
                                 if motionCorrect, mcTic = tic; end
-                                tmp2 = applyMotionCorrect_TIFF(ref, double(stitchFrame_TIFF(imread(T.fullFilePath, fp2(i)), info(1), T.roiData)), motionCorrect, [], p);
+                                tmp2 = applyMotionCorrect_TIFF(ref(:,:,p), double(stitchFrame_TIFF(imread(T.fullFilePath, fp2(i)), info(1), T.roiData)), motionCorrect);
                                 if motionCorrect, singleMcTime = singleMcTime + toc(mcTic); end
                                 f2 = f2 + tmp2;
                             end
@@ -3531,7 +3532,7 @@ updateDisplayMode();
                             for p = 1:numel(planeList)
                                 fp = getFramesForPlaneChannel_TIFF(planeList(p), channelNum, nF);
                                 if motionCorrect, mcTic = tic; end
-                                tmp = applyMotionCorrect_TIFF(ref, double(stitchFrame_TIFF(imread(T.fullFilePath, fp(i)), info(1), T.roiData)), motionCorrect, [], p);
+                                tmp = applyMotionCorrect_TIFF(ref(:,:,p), double(stitchFrame_TIFF(imread(T.fullFilePath, fp(i)), info(1), T.roiData)), motionCorrect);
                                 if motionCorrect, singleMcTime = singleMcTime + toc(mcTic); end
                                 avgMovie(:,:,p,i) = tmp;
                             end
