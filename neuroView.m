@@ -2723,6 +2723,8 @@ updateDisplayMode();
             ui.smoothingSigma = get(hSmoothingWindowInput, 'String');
             ui.maxFrames = get(hMaxFramesInput, 'String');
             ui.motionCorrect = get(hMotionCorrectCheckbox, 'Value');
+            % Bump this token whenever motion-correction internals change to avoid stale cache reuse.
+            ui.motionCorrectAlgoVersion = 'mc_robust_refine_v1';
         else
             ui.neuropilCoeff = get(hNeuropilCoeffInput, 'String');
             ui.detrend = get(hDetrendCheckbox, 'Value');
@@ -3274,41 +3276,28 @@ updateDisplayMode();
                     nPl = numel(planeList);
                     if isMerge
                         if nPl == 1
-                            refSum = zeros(H, W, 'double');
-                            for i = 1:nRefFrames
-                                f = double(stitchFrame_TIFF(imread(trialFilePaths{1}, framesPerTrialCh1{1}(i)), infoFirstPerTrial{1}, T.roiData));
-                                refSum = refSum + f;
-                            end
-                            ref = refSum / nRefFrames;
+                            fetchRef = @(ii) double(stitchFrame_TIFF(imread(trialFilePaths{1}, framesPerTrialCh1{1}(ii)), infoFirstPerTrial{1}, T.roiData));
+                            ref = buildRobustReference_TIFF(fetchRef, nRefFrames);
                         else
                             ref = zeros(H, W, nPl, 'double');
                             for p = 1:nPl
-                                refSum = zeros(H, W, 'double');
                                 nF1 = numel(imfinfo(trialFilePaths{1}));
-                                for i = 1:nRefFrames
-                                    fp1 = getFramesForPlaneChannel_TIFF(planeList(p), 1, nF1);
-                                    refSum = refSum + double(stitchFrame_TIFF(imread(trialFilePaths{1}, fp1(i)), infoFirstPerTrial{1}, T.roiData));
-                                end
-                                ref(:, :, p) = refSum / nRefFrames;
+                                fp1 = getFramesForPlaneChannel_TIFF(planeList(p), 1, nF1);
+                                fetchRef = @(ii) double(stitchFrame_TIFF(imread(trialFilePaths{1}, fp1(ii)), infoFirstPerTrial{1}, T.roiData));
+                                ref(:, :, p) = buildRobustReference_TIFF(fetchRef, nRefFrames);
                             end
                         end
                     else
                         if nPl == 1
-                            refSum = zeros(H, W, 'double');
-                            for i = 1:nRefFrames
-                                fp = framesPerTrialPerPlane{1};
-                                refSum = refSum + double(stitchFrame_TIFF(imread(trialFilePaths{1}, fp{1}(i)), infoFirstPerTrial{1}, T.roiData));
-                            end
-                            ref = refSum / nRefFrames;
+                            fp = framesPerTrialPerPlane{1};
+                            fetchRef = @(ii) double(stitchFrame_TIFF(imread(trialFilePaths{1}, fp{1}(ii)), infoFirstPerTrial{1}, T.roiData));
+                            ref = buildRobustReference_TIFF(fetchRef, nRefFrames);
                         else
                             ref = zeros(H, W, nPl, 'double');
                             for p = 1:nPl
-                                refSum = zeros(H, W, 'double');
-                                for i = 1:nRefFrames
-                                    fp = framesPerTrialPerPlane{1};
-                                    refSum = refSum + double(stitchFrame_TIFF(imread(trialFilePaths{1}, fp{p}(i)), infoFirstPerTrial{1}, T.roiData));
-                                end
-                                ref(:, :, p) = refSum / nRefFrames;
+                                fp = framesPerTrialPerPlane{1};
+                                fetchRef = @(ii) double(stitchFrame_TIFF(imread(trialFilePaths{1}, fp{p}(ii)), infoFirstPerTrial{1}, T.roiData));
+                                ref(:, :, p) = buildRobustReference_TIFF(fetchRef, nRefFrames);
                             end
                         end
                     end
@@ -3342,9 +3331,8 @@ updateDisplayMode();
                                 for p = 1:nPlM
                                     fp1 = getFramesForPlaneChannel_TIFF(planeList(p), 1, nFk);
                                     fp2 = getFramesForPlaneChannel_TIFF(planeList(p), 2, nFk);
-                                    % Slice ref to guarantee correct plane-to-reference mapping.
-                                    f1 = f1 + applyMotionCorrect_TIFF(ref(:,:,p), double(stitchFrame_TIFF(imread(trialFilePaths{k}, fp1(i)), infoFirstPerTrial{k}, T.roiData)), motionCorrect);
-                                    f2 = f2 + applyMotionCorrect_TIFF(ref(:,:,p), double(stitchFrame_TIFF(imread(trialFilePaths{k}, fp2(i)), infoFirstPerTrial{k}, T.roiData)), motionCorrect);
+                                    f1 = f1 + applyMotionCorrect_TIFF(ref, double(stitchFrame_TIFF(imread(trialFilePaths{k}, fp1(i)), infoFirstPerTrial{k}, T.roiData)), motionCorrect, [], p);
+                                    f2 = f2 + applyMotionCorrect_TIFF(ref, double(stitchFrame_TIFF(imread(trialFilePaths{k}, fp2(i)), infoFirstPerTrial{k}, T.roiData)), motionCorrect, [], p);
                                 end
                                 if motionCorrect, mcTime = mcTime + toc(mcTic); end
                             end
@@ -3376,7 +3364,7 @@ updateDisplayMode();
                                 for k = 1:numel(trialFilePaths)
                                     fp = framesPerTrialPerPlane{k};
                                     if motionCorrect, mcTic = tic; end
-                                    mcFrame = applyMotionCorrect_TIFF(ref(:,:,p), double(stitchFrame_TIFF(imread(trialFilePaths{k}, fp{p}(i)), infoFirstPerTrial{k}, T.roiData)), motionCorrect);
+                                    mcFrame = applyMotionCorrect_TIFF(ref, double(stitchFrame_TIFF(imread(trialFilePaths{k}, fp{p}(i)), infoFirstPerTrial{k}, T.roiData)), motionCorrect, [], p);
                                     if motionCorrect, mcTime = mcTime + toc(mcTic); end
                                     sumFrame = sumFrame + mcFrame;
                                 end
@@ -3440,42 +3428,29 @@ updateDisplayMode();
                     if isMerge
                         nRefFrames = min(50, nT);
                         if nPlF == 1
-                            refSum = zeros(H, W, 'double');
-                            for i = 1:nRefFrames
-                                f = double(stitchFrame_TIFF(imread(T.fullFilePath, allF1(i)), info(1), T.roiData));
-                                refSum = refSum + f;
-                            end
-                            ref = refSum / nRefFrames;
+                            fetchRef = @(ii) double(stitchFrame_TIFF(imread(T.fullFilePath, allF1(ii)), info(1), T.roiData));
+                            ref = buildRobustReference_TIFF(fetchRef, nRefFrames);
                         else
                             ref = zeros(H, W, nPlF, 'double');
                             for p = 1:nPlF
-                                refSum = zeros(H, W, 'double');
-                                for i = 1:nRefFrames
-                                    fp1 = getFramesForPlaneChannel_TIFF(planeList(p), 1, nF);
-                                    refSum = refSum + double(stitchFrame_TIFF(imread(T.fullFilePath, fp1(i)), info(1), T.roiData));
-                                end
-                                ref(:, :, p) = refSum / nRefFrames;
+                                fp1 = getFramesForPlaneChannel_TIFF(planeList(p), 1, nF);
+                                fetchRef = @(ii) double(stitchFrame_TIFF(imread(T.fullFilePath, fp1(ii)), info(1), T.roiData));
+                                ref(:, :, p) = buildRobustReference_TIFF(fetchRef, nRefFrames);
                             end
                         end
                     else
                         if nPlF == 1
                             allFramesRef = getFramesForPlaneChannel_TIFF(planeList(1), channelNum, nF);
                             nRefFrames = min(50, numel(allFramesRef));
-                            refSum = zeros(H, W, 'double');
-                            for i = 1:nRefFrames
-                                refSum = refSum + double(stitchFrame_TIFF(imread(T.fullFilePath, allFramesRef(i)), info(1), T.roiData));
-                            end
-                            ref = refSum / nRefFrames;
+                            fetchRef = @(ii) double(stitchFrame_TIFF(imread(T.fullFilePath, allFramesRef(ii)), info(1), T.roiData));
+                            ref = buildRobustReference_TIFF(fetchRef, nRefFrames);
                         else
                             ref = zeros(H, W, nPlF, 'double');
                             for p = 1:nPlF
                                 fpRef = getFramesForPlaneChannel_TIFF(planeList(p), channelNum, nF);
                                 nRefFrames = min(50, numel(fpRef));
-                                refSum = zeros(H, W, 'double');
-                                for i = 1:nRefFrames
-                                    refSum = refSum + double(stitchFrame_TIFF(imread(T.fullFilePath, fpRef(i)), info(1), T.roiData));
-                                end
-                                ref(:, :, p) = refSum / nRefFrames;
+                                fetchRef = @(ii) double(stitchFrame_TIFF(imread(T.fullFilePath, fpRef(ii)), info(1), T.roiData));
+                                ref(:, :, p) = buildRobustReference_TIFF(fetchRef, nRefFrames);
                             end
                         end
                     end
@@ -3507,11 +3482,11 @@ updateDisplayMode();
                                 fp1 = getFramesForPlaneChannel_TIFF(planeList(p), 1, nF);
                                 fp2 = getFramesForPlaneChannel_TIFF(planeList(p), 2, nF);
                                 if motionCorrect, mcTic = tic; end
-                                tmp1 = applyMotionCorrect_TIFF(ref(:,:,p), double(stitchFrame_TIFF(imread(T.fullFilePath, fp1(i)), info(1), T.roiData)), motionCorrect);
+                                tmp1 = applyMotionCorrect_TIFF(ref, double(stitchFrame_TIFF(imread(T.fullFilePath, fp1(i)), info(1), T.roiData)), motionCorrect, [], p);
                                 if motionCorrect, singleMcTime = singleMcTime + toc(mcTic); end
                                 f1 = f1 + tmp1;
                                 if motionCorrect, mcTic = tic; end
-                                tmp2 = applyMotionCorrect_TIFF(ref(:,:,p), double(stitchFrame_TIFF(imread(T.fullFilePath, fp2(i)), info(1), T.roiData)), motionCorrect);
+                                tmp2 = applyMotionCorrect_TIFF(ref, double(stitchFrame_TIFF(imread(T.fullFilePath, fp2(i)), info(1), T.roiData)), motionCorrect, [], p);
                                 if motionCorrect, singleMcTime = singleMcTime + toc(mcTic); end
                                 f2 = f2 + tmp2;
                             end
@@ -3532,7 +3507,7 @@ updateDisplayMode();
                             for p = 1:numel(planeList)
                                 fp = getFramesForPlaneChannel_TIFF(planeList(p), channelNum, nF);
                                 if motionCorrect, mcTic = tic; end
-                                tmp = applyMotionCorrect_TIFF(ref(:,:,p), double(stitchFrame_TIFF(imread(T.fullFilePath, fp(i)), info(1), T.roiData)), motionCorrect);
+                                tmp = applyMotionCorrect_TIFF(ref, double(stitchFrame_TIFF(imread(T.fullFilePath, fp(i)), info(1), T.roiData)), motionCorrect, [], p);
                                 if motionCorrect, singleMcTime = singleMcTime + toc(mcTic); end
                                 avgMovie(:,:,p,i) = tmp;
                             end
@@ -3569,6 +3544,29 @@ updateDisplayMode();
         frames = startFrame:frameStep:totalFrames;
     end
 
+    function ref = buildRobustReference_TIFF(fetchFrameFcn, nRefFrames)
+        % Build a robust reference in two passes:
+        % 1) Mean of first frames.
+        % 2) Re-register those frames to pass-1 mean and re-average.
+        if nRefFrames < 1
+            ref = [];
+            return;
+        end
+        f1 = fetchFrameFcn(1);
+        [H, W] = size(f1);
+        stack = zeros(H, W, nRefFrames, 'double');
+        stack(:,:,1) = double(f1);
+        for ii = 2:nRefFrames
+            stack(:,:,ii) = double(fetchFrameFcn(ii));
+        end
+        ref0 = mean(stack, 3);
+        alignedSum = zeros(H, W, 'double');
+        for ii = 1:nRefFrames
+            alignedSum = alignedSum + applyMotionCorrect_TIFF(ref0, stack(:,:,ii), true);
+        end
+        ref = alignedSum / nRefFrames;
+    end
+
     function [dy, dx] = getPhaseCorrShift_TIFF(ref, img, maxShiftPx)
         % Phase correlation for 2D translation. Returns subpixel [dy, dx]. Optionally clamp to maxShiftPx.
         ref = double(ref); img = double(img);
@@ -3576,6 +3574,17 @@ updateDisplayMode();
         pr = prctile(ref(:), [1 99]); ref = min(max(ref, pr(1)), pr(2));
         pr = prctile(img(:), [1 99]); img = min(max(img, pr(1)), pr(2));
         ref = ref - mean(ref(:)); img = img - mean(img(:));
+        % Apodize edges to suppress wrap-around peaks in FFT phase correlation.
+        persistent wy wx lastH lastW
+        [H, W] = size(ref);
+        if isempty(lastH) || isempty(lastW) || lastH ~= H || lastW ~= W
+            wy = hann(H);
+            wx = hann(W);
+            lastH = H; lastW = W;
+        end
+        win2d = wy * wx';
+        ref = ref .* win2d;
+        img = img .* win2d;
         sigRef = std(ref(:)); sigImg = std(img(:));
         if (sigRef > 1e-10), ref = ref / sigRef; end
         if (sigImg > 1e-10), img = img / sigImg; end
