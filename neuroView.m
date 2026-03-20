@@ -96,7 +96,7 @@ uicontrol('Parent', hTiffLoadPanel, 'Style', 'pushbutton', 'String', 'Load State
     'Position', [295 40 125 30], 'FontSize', 10, 'Callback', @loadStateCallback);
 hMotionCorrectCheckbox = uicontrol('Parent', hTiffLoadPanel, 'Style', 'checkbox', 'String', 'Motion correct', ...
     'Position', [10 10 120 20], 'Value', 0, 'BackgroundColor', [0.94 0.94 0.94], ...
-    'TooltipString', 'Phase correlation + subpixel peak estimate; shift rounded to integer pixels (no interp blur)');
+    'TooltipString', 'Phase correlation + subpixel peak; integer shift via imtranslate(...,nearest)');
 hReloadDataCheckbox_Tiff = uicontrol('Parent', hTiffLoadPanel, 'Style', 'checkbox', 'String', 'Reload raw data', ...
     'Position', [295 10 130 20], 'Value', 0, 'BackgroundColor', [0.94 0.94 0.94]);
 
@@ -2724,7 +2724,7 @@ updateDisplayMode();
             ui.maxFrames = get(hMaxFramesInput, 'String');
             ui.motionCorrect = get(hMotionCorrectCheckbox, 'Value');
             % Bump this token whenever motion-correction internals change to avoid stale cache reuse.
-            ui.motionCorrectAlgoVersion = 'mc_robust_refine_v7_subpx_est_int_apply';
+            ui.motionCorrectAlgoVersion = 'mc_robust_refine_v8_imtranslate_nearest';
         else
             ui.neuropilCoeff = get(hNeuropilCoeffInput, 'String');
             ui.detrend = get(hDetrendCheckbox, 'Value');
@@ -3680,12 +3680,16 @@ updateDisplayMode();
             refUse = ref;
         end
         [dy, dx] = getPhaseCorrShift_TIFF(refUse, frame, maxShiftPx);
-        % Subpixel estimate (parabolic peak) for stable offsets; apply only integer shift to original
-        % pixels so imtranslate uses nearest-sample shifts (no subpixel interpolation blur). Residual
-        % vs ideal subpixel warp is at most ~0.5 px per axis from rounding.
+        % Subpixel estimate (parabolic peak) for stable offsets; apply integer shift with nearest
+        % neighbor so imtranslate does not blend pixels (avoids default bicubic blur on shifts).
         dx_i = round(dx);
         dy_i = round(dy);
-        frameOut = imtranslate(frame, [dx_i, dy_i], 'OutputView', 'same');
+        try
+            frameOut = imtranslate(frame, [dx_i, dy_i], 'OutputView', 'same', 'Interpolation', 'nearest');
+        catch
+            % Older IPT without 'Interpolation' name-value: integer shift still avoids fractional warp
+            frameOut = imtranslate(frame, [dx_i, dy_i], 'OutputView', 'same');
+        end
     end
 
     function [pixelWidth, pixelHeight, physicalWidth, physicalHeight] = getStitchDimensions_TIFF(si_rois, zoom)
