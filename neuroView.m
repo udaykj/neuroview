@@ -96,7 +96,7 @@ uicontrol('Parent', hTiffLoadPanel, 'Style', 'pushbutton', 'String', 'Load State
     'Position', [295 40 125 30], 'FontSize', 10, 'Callback', @loadStateCallback);
 hMotionCorrectCheckbox = uicontrol('Parent', hTiffLoadPanel, 'Style', 'checkbox', 'String', 'Motion correct', ...
     'Position', [10 10 120 20], 'Value', 0, 'BackgroundColor', [0.94 0.94 0.94], ...
-    'TooltipString', 'Phase correlation + subpixel peak; integer shift via imtranslate(...,nearest)');
+    'TooltipString', 'Phase correlation + subpixel peak; integer pixel copy shift (no imtranslate)');
 hReloadDataCheckbox_Tiff = uicontrol('Parent', hTiffLoadPanel, 'Style', 'checkbox', 'String', 'Reload raw data', ...
     'Position', [295 10 130 20], 'Value', 0, 'BackgroundColor', [0.94 0.94 0.94]);
 
@@ -2724,7 +2724,7 @@ updateDisplayMode();
             ui.maxFrames = get(hMaxFramesInput, 'String');
             ui.motionCorrect = get(hMotionCorrectCheckbox, 'Value');
             % Bump this token whenever motion-correction internals change to avoid stale cache reuse.
-            ui.motionCorrectAlgoVersion = 'mc_robust_refine_v8_imtranslate_nearest';
+            ui.motionCorrectAlgoVersion = 'mc_robust_refine_v9_index_shift';
         else
             ui.neuropilCoeff = get(hNeuropilCoeffInput, 'String');
             ui.detrend = get(hDetrendCheckbox, 'Value');
@@ -3668,6 +3668,19 @@ updateDisplayMode();
         end
     end
 
+    function frameOut = integerShiftSameSize_TIFF(frame, dx_i, dy_i)
+        % Rigid integer translation, same size as imtranslate(...,OutputView,same): Tx=dx (cols), Ty=dy (rows).
+        % Pure sample copy — no resampling, no circshift wrap (uncovered pixels = 0 in class of frame).
+        [H, W] = size(frame);
+        frameOut = zeros(H, W, class(frame));
+        [Rout, Cout] = ndgrid(1:H, 1:W);
+        Rsrc = Rout - dy_i;
+        Csrc = Cout - dx_i;
+        mask = Rsrc >= 1 & Rsrc <= H & Csrc >= 1 & Csrc <= W;
+        linSrc = sub2ind([H, W], Rsrc(mask), Csrc(mask));
+        frameOut(mask) = frame(linSrc);
+    end
+
     function frameOut = applyMotionCorrect_TIFF(ref, frame, doMC, maxShiftPx, planeIdx)
         if ~doMC, frameOut = frame; return; end
         if nargin < 4, maxShiftPx = 25; end  % allow slightly larger corrections; subpixel keeps it smooth
@@ -3680,16 +3693,10 @@ updateDisplayMode();
             refUse = ref;
         end
         [dy, dx] = getPhaseCorrShift_TIFF(refUse, frame, maxShiftPx);
-        % Subpixel estimate (parabolic peak) for stable offsets; apply integer shift with nearest
-        % neighbor so imtranslate does not blend pixels (avoids default bicubic blur on shifts).
+        % Subpixel estimate; apply rounded integer shift by direct indexing (no imtranslate / no interp).
         dx_i = round(dx);
         dy_i = round(dy);
-        try
-            frameOut = imtranslate(frame, [dx_i, dy_i], 'OutputView', 'same', 'Interpolation', 'nearest');
-        catch
-            % Older IPT without 'Interpolation' name-value: integer shift still avoids fractional warp
-            frameOut = imtranslate(frame, [dx_i, dy_i], 'OutputView', 'same');
-        end
+        frameOut = integerShiftSameSize_TIFF(frame, dx_i, dy_i);
     end
 
     function [pixelWidth, pixelHeight, physicalWidth, physicalHeight] = getStitchDimensions_TIFF(si_rois, zoom)
