@@ -96,7 +96,7 @@ uicontrol('Parent', hTiffLoadPanel, 'Style', 'pushbutton', 'String', 'Load State
     'Position', [295 40 125 30], 'FontSize', 10, 'Callback', @loadStateCallback);
 hMotionCorrectCheckbox = uicontrol('Parent', hTiffLoadPanel, 'Style', 'checkbox', 'String', 'Motion correct', ...
     'Position', [10 10 120 20], 'Value', 0, 'BackgroundColor', [0.94 0.94 0.94], ...
-    'TooltipString', 'Phase correlation + subpixel peak; integer pixel copy shift (no imtranslate)');
+    'TooltipString', 'Phase correlation (subpixel); median+EMA on shift vectors; imtranslate before averaging/playback');
 hReloadDataCheckbox_Tiff = uicontrol('Parent', hTiffLoadPanel, 'Style', 'checkbox', 'String', 'Reload raw data', ...
     'Position', [295 10 130 20], 'Value', 0, 'BackgroundColor', [0.94 0.94 0.94]);
 
@@ -356,6 +356,7 @@ updateDisplayMode();
             hPlotFig = figure('Name', figName, 'NumberTitle', 'off', 'Position', [600 100 600 900]);
             
             hAxes = axes('Parent', hPlotFig, 'Units', 'normalized', 'Position', [0.1 0.35 0.8 0.56]);
+            wireSafeFigureSave_avg(hPlotFig, @() hAxes, figName);
 
             vareaHandles = [];
             if ~isempty(localState.Neural.vareaData)
@@ -590,6 +591,7 @@ updateDisplayMode();
             hUndockedFig_avg = figure('Name', [figName ' - Popout'], 'NumberTitle', 'off', ...
                 'Position', [popX popY popW popH], 'Color', 'k', 'CloseRequestFcn', @closeUndocked_avg);
             hUndockedAxes_avg = axes('Parent', hUndockedFig_avg, 'Units', 'normalized', 'Position', [0.02 0.02 0.96 0.96]);
+            wireSafeFigureSave_avg(hUndockedFig_avg, @() hUndockedAxes_avg, [figName '_popout']);
             set(hPopoutBtn_avg, 'String', 'Dock');
             refreshUndocked_avg();
             try
@@ -603,6 +605,156 @@ updateDisplayMode();
             if isscalar(hUndockedFig_avg) && isgraphics(hUndockedFig_avg), delete(hUndockedFig_avg); end
             hUndockedFig_avg = []; hUndockedAxes_avg = []; hUndockedPlot_avg = [];
             if isscalar(hPopoutBtn_avg) && isgraphics(hPopoutBtn_avg), set(hPopoutBtn_avg, 'String', 'Popout'); end
+        end
+
+        function wireSafeFigureSave_avg(hFigTarget, axesGetterFcn, defaultBaseName)
+            % Replace native Save/Save As for average windows with a sanitized export path.
+            % This avoids serializing app-specific nested callbacks/listeners into .fig files
+            % and keeps image exports stable for RGB/false-color views.
+            if ~(isscalar(hFigTarget) && isgraphics(hFigTarget, 'figure')), return; end
+            try
+                saveCb = @(~,~) saveAverageFigureSnapshot_avg(hFigTarget, axesGetterFcn, defaultBaseName);
+                hMenuSave = findall(hFigTarget, 'Type', 'uimenu', 'Tag', 'figMenuFileSave');
+                hMenuSaveAs = findall(hFigTarget, 'Type', 'uimenu', 'Tag', 'figMenuFileSaveAs');
+                if ~isempty(hMenuSave), set(hMenuSave, 'Callback', saveCb); end
+                if ~isempty(hMenuSaveAs), set(hMenuSaveAs, 'Callback', saveCb); end
+                hTb = findall(hFigTarget, 'Type', 'uitoolbar');
+                hSaveTool = findall(hTb, 'Type', 'uipushtool', 'Tag', 'Standard.SaveFigure');
+                if ~isempty(hSaveTool), set(hSaveTool, 'ClickedCallback', saveCb); end
+            catch
+            end
+        end
+
+        function compactGraphicsForFigSave_avg(hAx)
+            % Reduce .fig size and improve load reliability: HG save serializes CData verbatim.
+            % Double RGB stacks (merge/falsecolor) can produce 100+ MB .fig files that fail to open.
+            if ~(isscalar(hAx) && isgraphics(hAx, 'axes')), return; end
+            try
+                him = findall(hAx, 'Type', 'image');
+                for ii = 1:numel(him)
+                    hi = him(ii);
+                    cd = get(hi, 'CData');
+                    if isempty(cd) || ~isnumeric(cd), continue; end
+                    % Drop per-pixel alpha (often double, doubles serialized size)
+                    try
+                        ad = get(hi, 'AlphaData');
+                        if ~isempty(ad) && isnumeric(ad) && numel(ad) > 1
+                            set(hi, 'AlphaData', []);
+                        end
+                    catch
+                    end
+                    sz = size(cd);
+                    if numel(sz) >= 3 && sz(3) == 3
+                        % Truecolor: store as uint8 (same on-screen for [0,1] or 0-255 content)
+                        d = double(cd);
+                        mx = max(d(:)); mn = min(d(:));
+                        if mx <= 1.0 + 1e-6 && mn >= -1e-6
+                            u8 = uint8(round(min(1, max(0, d)) * 255));
+                        elseif mx <= 255.5 && mn >= -0.5
+                            u8 = uint8(round(min(255, max(0, d))));
+                        else
+                            u8 = uint8(round(255 * (d - mn) ./ (mx - mn + eps)));
+                        end
+                        set(hi, 'CData', u8);
+                    elseif ismatrix(cd) || (numel(sz) == 3 && sz(3) == 1)
+                        % Indexed / grayscale: single precision preserves display with ~half the bytes of double
+                        if isa(cd, 'double')
+                            set(hi, 'CData', single(cd));
+                        end
+                    end
+                end
+                % Scatter CData can be large double column vectors
+                hs = findall(hAx, 'Type', 'scatter');
+                for ii = 1:numel(hs)
+                    cd = get(hs(ii), 'CData');
+                    if isnumeric(cd) && isa(cd, 'double')
+                        set(hs(ii), 'CData', single(cd));
+                    end
+                end
+            catch
+            end
+        end
+
+        function saveAverageFigureSnapshot_avg(hFigSource, axesGetterFcn, defaultBaseName)
+            if nargin < 3 || isempty(defaultBaseName), defaultBaseName = 'average_figure'; end
+            filters = { ...
+                '*.fig', 'MATLAB Figure (*.fig)'; ...
+                '*.png', 'PNG Image (*.png)'; ...
+                '*.tif', 'TIFF Image (*.tif)'; ...
+                '*.jpg', 'JPEG Image (*.jpg)'; ...
+                '*.pdf', 'PDF Document (*.pdf)'; ...
+                '*.svg', 'SVG Vector (*.svg)'; ...
+                '*.eps', 'EPS Vector (*.eps)'};
+            % Use base name (no forced extension) so changing filter does not keep a stale ".fig".
+            [fileName, pathName, filterIndex] = uiputfile(filters, 'Save Average Figure As', defaultBaseName);
+            if isequal(fileName, 0), return; end
+            savePath = fullfile(pathName, fileName);
+            [~,~,ext] = fileparts(savePath);
+            extList = {'.fig','.png','.tif','.jpg','.pdf','.svg','.eps'};
+            desiredExt = extList{max(1, min(numel(extList), filterIndex))};
+            if isempty(ext)
+                ext = desiredExt;
+                savePath = [savePath ext];
+            elseif ~strcmpi(ext, desiredExt)
+                % If user switched format filters but left old extension in the name, honor filter choice.
+                [p,n,~] = fileparts(savePath);
+                ext = desiredExt;
+                savePath = fullfile(p, [n ext]);
+            end
+
+            hAxSource = [];
+            try
+                hAxSource = axesGetterFcn();
+            catch
+            end
+            if ~(isscalar(hAxSource) && isgraphics(hAxSource, 'axes'))
+                errordlg('Unable to save: plotting axes are not available.', 'Save Error');
+                return;
+            end
+
+            hExportFig = [];
+            try
+                srcPos = get(hFigSource, 'Position');
+                hExportFig = figure('Visible', 'off', 'Color', get(hFigSource, 'Color'), ...
+                    'InvertHardcopy', 'off', 'Position', srcPos, 'NumberTitle', 'off', ...
+                    'Name', get(hFigSource, 'Name'));
+                hCopiedAx = copyobj(hAxSource, hExportFig);
+                set(hCopiedAx, 'Units', 'normalized', 'Position', [0.08 0.08 0.88 0.88], 'ActivePositionProperty', 'position');
+                try, colormap(hExportFig, colormap(hAxSource)); end
+                drawnow;
+                switch lower(ext)
+                    case '.fig'
+                        compactGraphicsForFigSave_avg(hCopiedAx);
+                        % CRITICAL: do not save with Visible='off' — reopened .fig would load invisible
+                        % ("nothing happens" / no window). Raster exports can stay off-screen below.
+                        set(hExportFig, 'Visible', 'on', 'HandleVisibility', 'on');
+                        drawnow;
+                        % Optional 'compact' reduces size on many releases; newer MATLAB may error — fall back.
+                        try
+                            savefig(hExportFig, savePath, 'compact');
+                        catch
+                            savefig(hExportFig, savePath);
+                        end
+                    otherwise
+                        try
+                            exportgraphics(hCopiedAx, savePath, 'Resolution', 300);
+                        catch
+                            % Compatibility fallback for older MATLAB versions without exportgraphics.
+                            switch lower(ext)
+                                case '.png', print(hExportFig, savePath, '-dpng', '-r300');
+                                case '.tif', print(hExportFig, savePath, '-dtiff', '-r300');
+                                case '.jpg', print(hExportFig, savePath, '-djpeg', '-r300');
+                                case '.pdf', print(hExportFig, savePath, '-dpdf', '-r300');
+                                case '.svg', print(hExportFig, savePath, '-dsvg');
+                                case '.eps', print(hExportFig, savePath, '-depsc');
+                                otherwise, saveas(hExportFig, savePath);
+                            end
+                        end
+                end
+            catch ME
+                errordlg(sprintf('Failed to save figure:\n%s', ME.message), 'Save Error');
+            end
+            if isscalar(hExportFig) && isgraphics(hExportFig), close(hExportFig); end
         end
 
         function refreshUndocked_avg()
@@ -993,6 +1145,7 @@ updateDisplayMode();
         T.fullFilePath = fullfile(pathName, fileName);
         T.selectedFolderPath = '';
         T.folderFileCount = 0;
+        T.bidiLineShiftPx = []; % re-estimate on next TIFF movie build
         appState.loadedMovieData = []; appState.loadedPlayerState = [];
         appState.sessionCache = struct('data', [], 'fingerprint', []); % Invalidate cache
         appState.TIFF = T;
@@ -1015,6 +1168,7 @@ updateDisplayMode();
         T.selectedFolderPath = folderName;
         T.fullFilePath = '';
         T.folderFileCount = 0;
+        T.bidiLineShiftPx = [];
         appState.loadedMovieData = []; appState.loadedPlayerState = [];
         appState.sessionCache = struct('data', [], 'fingerprint', []); % Invalidate cache
         
@@ -2724,7 +2878,9 @@ updateDisplayMode();
             ui.maxFrames = get(hMaxFramesInput, 'String');
             ui.motionCorrect = get(hMotionCorrectCheckbox, 'Value');
             % Bump this token whenever motion-correction internals change to avoid stale cache reuse.
-            ui.motionCorrectAlgoVersion = 'mc_robust_refine_v9_index_shift';
+            ui.motionCorrectAlgoVersion = 'mc_subpix_medema_v3';
+            % Bidirectional scan-line offset correction (always on for TIFF); bump if algorithm changes.
+            ui.tiffBidirectionalScanVersion = 'bidi_line_v1';
         else
             ui.neuropilCoeff = get(hNeuropilCoeffInput, 'String');
             ui.detrend = get(hDetrendCheckbox, 'Value');
@@ -3230,6 +3386,9 @@ updateDisplayMode();
             % When motionCorrect: each raw stitched frame is registered to the reference BEFORE
             % it is added into the trial average (folder) or movie stack (single file).
             motionCorrect = (get(hMotionCorrectCheckbox, 'Value') == 1);
+            if motionCorrect
+                smoothMotionShift_TIFF('__reset__');
+            end
             ref = [];
             if T.isFolderMode
                 evaluatedTrials = evalin('base', trialSelectionStr);
@@ -3268,6 +3427,18 @@ updateDisplayMode();
                 if ~isnan(maxFramesVal) && maxFramesVal > 0
                     minTrialLength = min(minTrialLength, round(maxFramesVal));
                 end
+                
+                if isMerge
+                    if numel(planeList) == 1
+                        frVecBidi = framesPerTrialCh1{1};
+                    else
+                        nFkBidi = numel(imfinfo(trialFilePaths{1}));
+                        frVecBidi = getFramesForPlaneChannel_TIFF(planeList(1), 1, nFkBidi);
+                    end
+                else
+                    frVecBidi = framesPerTrialPerPlane{1}{1};
+                end
+                ensureTiffBidirectionalOffsetForCurrentMovie_TIFF(@(ord) stitchFrameCore_TIFF(imread(trialFilePaths{1}, frVecBidi(ord)), infoFirstPerTrial{1}, T.roiData), minTrialLength);
                 
                 firstFrame = stitchFrame_TIFF(imread(trialFilePaths{1}, 1), infoFirstPerTrial{1}, T.roiData);
                 [H, W] = size(firstFrame);
@@ -3313,20 +3484,22 @@ updateDisplayMode();
                 if isMerge
                     avgMovie = zeros(H, W, 3, minTrialLength, 'double');
                     nPlM = numel(planeList);
+                    nTrialF = numel(trialFilePaths);
                     if motionCorrect
                         stepStart = tic; % includes read+stitch+sum+normalization
                         mcTime = 0;      % counts time spent inside applyMotionCorrect_TIFF only
                     end
-                    for i = 1:minTrialLength
-                        sumR = zeros(H, W, 'double'); sumG = zeros(H, W, 'double');
-                        for k = 1:numel(trialFilePaths)
-                            nFk = numel(imfinfo(trialFilePaths{k}));
+                    % Outer loop = trial k: shift smoother is causal in real time per trial; reset each trial.
+                    for k = 1:nTrialF
+                        if motionCorrect, smoothMotionShift_TIFF('__reset__'); end
+                        nFk = numel(imfinfo(trialFilePaths{k}));
+                        for i = 1:minTrialLength
                             if nPlM == 1
                                 f1 = double(stitchFrame_TIFF(imread(trialFilePaths{k}, framesPerTrialCh1{k}(i)), infoFirstPerTrial{k}, T.roiData));
                                 f2 = double(stitchFrame_TIFF(imread(trialFilePaths{k}, framesPerTrialCh2{k}(i)), infoFirstPerTrial{k}, T.roiData));
                                 if motionCorrect, mcTic = tic; end
-                                f1 = applyMotionCorrect_TIFF(ref, f1, motionCorrect);
-                                f2 = applyMotionCorrect_TIFF(ref, f2, motionCorrect);
+                                f1 = applyMotionCorrect_TIFF(ref, f1, motionCorrect, [], [], 1);
+                                f2 = applyMotionCorrect_TIFF(ref, f2, motionCorrect, [], [], 2);
                                 if motionCorrect, mcTime = mcTime + toc(mcTic); end
                             else
                                 f1 = 0; f2 = 0;
@@ -3334,14 +3507,19 @@ updateDisplayMode();
                                 for p = 1:nPlM
                                     fp1 = getFramesForPlaneChannel_TIFF(planeList(p), 1, nFk);
                                     fp2 = getFramesForPlaneChannel_TIFF(planeList(p), 2, nFk);
-                                    f1 = f1 + applyMotionCorrect_TIFF(ref, double(stitchFrame_TIFF(imread(trialFilePaths{k}, fp1(i)), infoFirstPerTrial{k}, T.roiData)), motionCorrect, [], p);
-                                    f2 = f2 + applyMotionCorrect_TIFF(ref, double(stitchFrame_TIFF(imread(trialFilePaths{k}, fp2(i)), infoFirstPerTrial{k}, T.roiData)), motionCorrect, [], p);
+                                    f1 = f1 + applyMotionCorrect_TIFF(ref, double(stitchFrame_TIFF(imread(trialFilePaths{k}, fp1(i)), infoFirstPerTrial{k}, T.roiData)), motionCorrect, [], p, 1);
+                                    f2 = f2 + applyMotionCorrect_TIFF(ref, double(stitchFrame_TIFF(imread(trialFilePaths{k}, fp2(i)), infoFirstPerTrial{k}, T.roiData)), motionCorrect, [], p, 2);
                                 end
                                 if motionCorrect, mcTime = mcTime + toc(mcTic); end
                             end
-                            sumR = sumR + f1; sumG = sumG + f2;
+                            avgMovie(:,:,1,i) = avgMovie(:,:,1,i) + f1;
+                            avgMovie(:,:,2,i) = avgMovie(:,:,2,i) + f2;
                         end
-                        sumR = sumR / numel(trialFilePaths); sumG = sumG / numel(trialFilePaths);
+                    end
+                    avgMovie(:,:,1,:) = avgMovie(:,:,1,:) / nTrialF;
+                    avgMovie(:,:,2,:) = avgMovie(:,:,2,:) / nTrialF;
+                    for i = 1:minTrialLength
+                        sumR = avgMovie(:,:,1,i); sumG = avgMovie(:,:,2,i);
                         pr = prctile(sumR(:), [1 99]); pg = prctile(sumG(:), [1 99]);
                         r = (sumR - pr(1)) / (diff(pr) + eps); g = (sumG - pg(1)) / (diff(pg) + eps);
                         avgMovie(:,:,1,i) = min(1, max(0, r));
@@ -3357,23 +3535,25 @@ updateDisplayMode();
                 else
                     if numel(planeList) > 1
                         avgMovie = zeros(H, W, numel(planeList), minTrialLength, 'double');
+                        nTrialF = numel(trialFilePaths);
+                        nPlF2 = numel(planeList);
                         if motionCorrect
                             stepStart = tic;
                             mcTime = 0;
                         end
-                        for i = 1:minTrialLength
-                            for p = 1:numel(planeList)
-                                sumFrame = zeros(H, W, 'double');
-                                for k = 1:numel(trialFilePaths)
-                                    fp = framesPerTrialPerPlane{k};
+                        for k = 1:nTrialF
+                            if motionCorrect, smoothMotionShift_TIFF('__reset__'); end
+                            fp = framesPerTrialPerPlane{k};
+                            for i = 1:minTrialLength
+                                for p = 1:nPlF2
                                     if motionCorrect, mcTic = tic; end
                                     mcFrame = applyMotionCorrect_TIFF(ref, double(stitchFrame_TIFF(imread(trialFilePaths{k}, fp{p}(i)), infoFirstPerTrial{k}, T.roiData)), motionCorrect, [], p);
                                     if motionCorrect, mcTime = mcTime + toc(mcTic); end
-                                    sumFrame = sumFrame + mcFrame;
+                                    avgMovie(:,:,p,i) = avgMovie(:,:,p,i) + mcFrame;
                                 end
-                                avgMovie(:,:,p,i) = sumFrame / numel(trialFilePaths);
                             end
                         end
+                        avgMovie = avgMovie / nTrialF;
                         if motionCorrect
                             totalTime = toc(stepStart);
                             frameAvgTime = max(0, totalTime - mcTime);
@@ -3382,21 +3562,22 @@ updateDisplayMode();
                         end
                     else
                         avgMovie = zeros(H, W, minTrialLength, 'double');
+                        nTrialF = numel(trialFilePaths);
                         if motionCorrect
                             stepStart = tic;
                             mcTime = 0;
                         end
-                        for i = 1:minTrialLength
-                            sumFrame = zeros(H, W, 'double');
-                            for k = 1:numel(trialFilePaths)
-                                fp = framesPerTrialPerPlane{k};
+                        for k = 1:nTrialF
+                            if motionCorrect, smoothMotionShift_TIFF('__reset__'); end
+                            fp = framesPerTrialPerPlane{k};
+                            for i = 1:minTrialLength
                                 if motionCorrect, mcTic = tic; end
                                 mcFrame = applyMotionCorrect_TIFF(ref, double(stitchFrame_TIFF(imread(trialFilePaths{k}, fp{1}(i)), infoFirstPerTrial{k}, T.roiData)), motionCorrect);
                                 if motionCorrect, mcTime = mcTime + toc(mcTic); end
-                                sumFrame = sumFrame + mcFrame;
+                                avgMovie(:,:,i) = avgMovie(:,:,i) + mcFrame;
                             end
-                            avgMovie(:,:,i) = sumFrame / numel(trialFilePaths);
                         end
+                        avgMovie = avgMovie / nTrialF;
                         if motionCorrect
                             totalTime = toc(stepStart);
                             frameAvgTime = max(0, totalTime - mcTime);
@@ -3423,6 +3604,11 @@ updateDisplayMode();
                 maxFramesVal = str2double(maxFramesStr);
                 if ~isnan(maxFramesVal) && maxFramesVal > 0
                     nT = min(nT, round(maxFramesVal));
+                end
+                if isMerge
+                    ensureTiffBidirectionalOffsetForCurrentMovie_TIFF(@(ord) stitchFrameCore_TIFF(imread(T.fullFilePath, allF1(ord)), info(1), T.roiData), nT);
+                else
+                    ensureTiffBidirectionalOffsetForCurrentMovie_TIFF(@(ord) stitchFrameCore_TIFF(imread(T.fullFilePath, allFrames(ord)), info(1), T.roiData), nT);
                 end
                 firstFrame = stitchFrame_TIFF(imread(T.fullFilePath, 1), info(1), T.roiData);
                 [H, W] = size(firstFrame);
@@ -3479,10 +3665,10 @@ updateDisplayMode();
                     for i = 1:nT
                         if nPlFM == 1
                             if motionCorrect, mcTic = tic; end
-                            f1 = applyMotionCorrect_TIFF(ref, double(stitchFrame_TIFF(imread(T.fullFilePath, allF1(i)), info(1), T.roiData)), motionCorrect);
+                            f1 = applyMotionCorrect_TIFF(ref, double(stitchFrame_TIFF(imread(T.fullFilePath, allF1(i)), info(1), T.roiData)), motionCorrect, [], [], 1);
                             if motionCorrect, singleMcTime = singleMcTime + toc(mcTic); end
                             if motionCorrect, mcTic = tic; end
-                            f2 = applyMotionCorrect_TIFF(ref, double(stitchFrame_TIFF(imread(T.fullFilePath, allF2(i)), info(1), T.roiData)), motionCorrect);
+                            f2 = applyMotionCorrect_TIFF(ref, double(stitchFrame_TIFF(imread(T.fullFilePath, allF2(i)), info(1), T.roiData)), motionCorrect, [], [], 2);
                             if motionCorrect, singleMcTime = singleMcTime + toc(mcTic); end
                         else
                             f1 = 0; f2 = 0;
@@ -3490,11 +3676,11 @@ updateDisplayMode();
                                 fp1 = getFramesForPlaneChannel_TIFF(planeList(p), 1, nF);
                                 fp2 = getFramesForPlaneChannel_TIFF(planeList(p), 2, nF);
                                 if motionCorrect, mcTic = tic; end
-                                tmp1 = applyMotionCorrect_TIFF(ref, double(stitchFrame_TIFF(imread(T.fullFilePath, fp1(i)), info(1), T.roiData)), motionCorrect, [], p);
+                                tmp1 = applyMotionCorrect_TIFF(ref, double(stitchFrame_TIFF(imread(T.fullFilePath, fp1(i)), info(1), T.roiData)), motionCorrect, [], p, 1);
                                 if motionCorrect, singleMcTime = singleMcTime + toc(mcTic); end
                                 f1 = f1 + tmp1;
                                 if motionCorrect, mcTic = tic; end
-                                tmp2 = applyMotionCorrect_TIFF(ref, double(stitchFrame_TIFF(imread(T.fullFilePath, fp2(i)), info(1), T.roiData)), motionCorrect, [], p);
+                                tmp2 = applyMotionCorrect_TIFF(ref, double(stitchFrame_TIFF(imread(T.fullFilePath, fp2(i)), info(1), T.roiData)), motionCorrect, [], p, 2);
                                 if motionCorrect, singleMcTime = singleMcTime + toc(mcTic); end
                                 f2 = f2 + tmp2;
                             end
@@ -3606,13 +3792,13 @@ updateDisplayMode();
         ref0 = mean(stack, 3);
         alignedSum = zeros(H, W, 'double');
         for ii = 1:nRefFrames
-            alignedSum = alignedSum + applyMotionCorrect_TIFF(ref0, stack(:,:,ii), true);
+            alignedSum = alignedSum + applyMotionCorrect_TIFF(ref0, stack(:,:,ii), true, [], [], 0, true);
         end
         ref = alignedSum / nRefFrames;
     end
 
     function [dy, dx] = getPhaseCorrShift_TIFF(ref, img, maxShiftPx)
-        % Phase correlation for 2D translation. Returns subpixel [dy, dx]. Optionally clamp to maxShiftPx.
+        % Phase correlation for 2D translation. Returns subpixel [dy, dx] for imtranslate(...,[dx,dy]).
         ref = double(ref); img = double(img);
         % Clip to percentile range to reduce hot pixels / outliers
         pr = prctile(ref(:), [1 99]); ref = min(max(ref, pr(1)), pr(2));
@@ -3668,23 +3854,64 @@ updateDisplayMode();
         end
     end
 
-    function frameOut = integerShiftSameSize_TIFF(frame, dx_i, dy_i)
-        % Rigid integer translation, same size as imtranslate(...,OutputView,same): Tx=dx (cols), Ty=dy (rows).
-        % Pure sample copy — no resampling, no circshift wrap (uncovered pixels = 0 in class of frame).
-        [H, W] = size(frame);
-        frameOut = zeros(H, W, class(frame));
-        [Rout, Cout] = ndgrid(1:H, 1:W);
-        Rsrc = Rout - dy_i;
-        Csrc = Cout - dx_i;
-        mask = Rsrc >= 1 & Rsrc <= H & Csrc >= 1 & Csrc <= W;
-        linSrc = sub2ind([H, W], Rsrc(mask), Csrc(mask));
-        frameOut(mask) = frame(linSrc);
+    function [dxOut, dyOut] = smoothMotionShift_TIFF(dx, dy, planeIdx, streamTag, H, W)
+        % Temporal smoothing of translation estimates only (not image pixels).
+        % Causal sliding median on raw phase-correlation shifts, then EMA. No leading-edge padding
+        % on the median (padding with frame 1 biases early single-file streams for many frames).
+        MED_WIN = 9;
+        EMA_ALPHA = 0.38;
+        % After reset, use a higher EMA gain for a few hundred frames so long single-TIFF movies
+        % converge to the true offset quickly at recording start (median still rejects spikes).
+        WARM_FRAMES = 200;
+        EMA_ALPHA_WARM = 0.62;
+        persistent bufDx bufDy emaDx emaDy lastHW frameN
+        if nargin >= 1 && ischar(dx) && strcmp(dx, '__reset__')
+            bufDx = {}; bufDy = {}; emaDx = {}; emaDy = {}; lastHW = []; frameN = {};
+            dxOut = 0; dyOut = 0;
+            return;
+        end
+        if nargin < 3 || isempty(planeIdx), planeIdx = 1; end
+        if nargin < 4 || isempty(streamTag), streamTag = 0; end
+        key = planeIdx * 16 + streamTag;
+        if isempty(lastHW) || lastHW(1) ~= H || lastHW(2) ~= W
+            bufDx = {}; bufDy = {}; emaDx = {}; emaDy = {}; frameN = {}; lastHW = [H, W];
+        end
+        while numel(bufDx) < key
+            bufDx{end+1} = []; bufDy{end+1} = []; emaDx{end+1} = []; emaDy{end+1} = []; frameN{end+1} = 0;
+        end
+        bufDx{key}(end+1) = dx;
+        bufDy{key}(end+1) = dy;
+        if numel(bufDx{key}) > MED_WIN
+            bufDx{key} = bufDx{key}(end - MED_WIN + 1:end);
+            bufDy{key} = bufDy{key}(end - MED_WIN + 1:end);
+        end
+        bx = bufDx{key};
+        by = bufDy{key};
+        dxMed = median(bx);
+        dyMed = median(by);
+        frameN{key} = frameN{key} + 1;
+        if frameN{key} <= WARM_FRAMES
+            alphaUse = EMA_ALPHA_WARM;
+        else
+            alphaUse = EMA_ALPHA;
+        end
+        if isempty(emaDx{key})
+            emaDx{key} = dxMed;
+            emaDy{key} = dyMed;
+        else
+            emaDx{key} = alphaUse * dxMed + (1 - alphaUse) * emaDx{key};
+            emaDy{key} = alphaUse * dyMed + (1 - alphaUse) * emaDy{key};
+        end
+        dxOut = emaDx{key};
+        dyOut = emaDy{key};
     end
 
-    function frameOut = applyMotionCorrect_TIFF(ref, frame, doMC, maxShiftPx, planeIdx)
+    function frameOut = applyMotionCorrect_TIFF(ref, frame, doMC, maxShiftPx, planeIdx, streamTag, skipShiftSmooth)
         if ~doMC, frameOut = frame; return; end
-        if nargin < 4, maxShiftPx = 25; end  % allow slightly larger corrections; subpixel keeps it smooth
+        if nargin < 4, maxShiftPx = 25; end
         if nargin < 5, planeIdx = []; end
+        if nargin < 6 || isempty(streamTag), streamTag = 0; end
+        if nargin < 7 || isempty(skipShiftSmooth), skipShiftSmooth = false; end
         % Multi-plane (Plane=All): ref is H x W x P; each plane registers to its own mean reference.
         if ndims(ref) >= 3 && size(ref, 3) > 1
             if isempty(planeIdx), planeIdx = 1; end
@@ -3693,10 +3920,15 @@ updateDisplayMode();
             refUse = ref;
         end
         [dy, dx] = getPhaseCorrShift_TIFF(refUse, frame, maxShiftPx);
-        % Subpixel estimate; apply rounded integer shift by direct indexing (no imtranslate / no interp).
-        dx_i = round(dx);
-        dy_i = round(dy);
-        frameOut = integerShiftSameSize_TIFF(frame, dx_i, dy_i);
+        [Hf, Wf] = size(frame);
+        if ~skipShiftSmooth
+            [dy, dx] = smoothMotionShift_TIFF(dy, dx, planeIdx, streamTag, Hf, Wf);
+        end
+        try
+            frameOut = imtranslate(frame, [dx, dy], 'OutputView', 'same', 'Interpolation', 'bicubic');
+        catch
+            frameOut = imtranslate(frame, [dx, dy], 'OutputView', 'same');
+        end
     end
 
     function [pixelWidth, pixelHeight, physicalWidth, physicalHeight] = getStitchDimensions_TIFF(si_rois, zoom)
@@ -3723,7 +3955,7 @@ updateDisplayMode();
         end
     end
     
-    function stitched = stitchFrame_TIFF(rawFrame, header, si_rois)
+    function stitched = stitchFrameCore_TIFF(rawFrame, header, si_rois)
         [canvas, stitchData] = prepareStitch_TIFF(header, si_rois, class(rawFrame));
         stitched = canvas;
         for i = 1:numel(si_rois)
@@ -3733,6 +3965,171 @@ updateDisplayMode();
             x_start = round(double(stitchData.dx(i))) + 1;
             x_end = x_start + size(roi_strip,2) - 1;
             stitched(y_start:y_end, x_start:x_end) = roi_strip;
+        end
+    end
+
+    function stitched = stitchFrame_TIFF(rawFrame, header, si_rois)
+        stitched = stitchFrameCore_TIFF(rawFrame, header, si_rois);
+        stitched = applyBidirectionalLineShiftToStitchedFrame_TIFF(stitched);
+    end
+
+    function out = applyBidirectionalLineShiftToStitchedFrame_TIFF(img)
+        out = img;
+        Tloc = appState.TIFF;
+        if ~isfield(Tloc, 'bidiLineShiftPx') || isempty(Tloc.bidiLineShiftPx), return; end
+        dx = Tloc.bidiLineShiftPx;
+        if ~isscalar(dx) || ~isfinite(dx) || abs(dx) < 1e-8, return; end
+        out = applyBidirectionalLineShiftToImage_TIFF(img, dx);
+    end
+
+    function out = applyBidirectionalLineShiftToImage_TIFF(img, dx)
+        % Horizontal shift of even scan lines (2:2:end) by dx (px), linear interp; odd lines fixed.
+        % Matches Suite2p ordering: fix line-interleave before rigid motion correction.
+        if abs(dx) < 1e-8, out = img; return; end
+        cls = class(img);
+        isFloat = isfloat(img);
+        if ndims(img) == 3
+            out = zeros(size(img), cls);
+            for c = 1:size(img, 3)
+                out(:, :, c) = applyBidirectionalLineShiftToImage2D_TIFF(double(img(:, :, c)), dx, cls, isFloat);
+            end
+        else
+            out = applyBidirectionalLineShiftToImage2D_TIFF(double(img), dx, cls, isFloat);
+        end
+    end
+
+    function out = applyBidirectionalLineShiftToImage2D_TIFF(dblPlane, dx, origClass, isFloat)
+        [H, W] = size(dblPlane);
+        xg = 1:W;
+        outD = dblPlane;
+        for r = 2:2:H
+            row = dblPlane(r, :);
+            outD(r, :) = interp1(xg, row, xg - dx, 'linear', 0);
+        end
+        if isFloat
+            out = cast(outD, origClass);
+        else
+            out = cast(round(outD), origClass);
+        end
+    end
+
+    function g = tiffFrameToGrayDoubleForBidi(f)
+        f = double(f);
+        if ndims(f) == 3
+            g = mean(f, 3);
+        else
+            g = f;
+        end
+    end
+
+    function dx = estimateBidirectionalDxFromMeanImage_TIFF(M)
+        % Phase-correlation lag between mean(odd lines) and mean(even lines); pick sign by inter-line smoothness.
+        M = double(M);
+        [H, W] = size(M);
+        dx = 0;
+        if H < 4 || W < 8, return; end
+        Mo = M(1:2:end, :);
+        Me = M(2:2:end, :);
+        nR = min(size(Mo, 1), size(Me, 1));
+        if nR < 1, return; end
+        Mo = Mo(1:nR, :);
+        Me = Me(1:nR, :);
+        a = mean(Mo, 1);
+        b = mean(Me, 1);
+        a = a - mean(a); b = b - mean(b);
+        na = norm(a) + 1e-12; nb = norm(b) + 1e-12;
+        a = a / na; b = b / nb;
+        A = fft(a); B = fft(b);
+        R = B .* conj(A);
+        R = R ./ max(abs(R), 1e-12);
+        r = real(ifft(R));
+        [mpv, ix] = max(r(:));
+        lag = ix - 1;
+        if lag > W / 2, lag = lag - W; end
+        maxLag = min(32, max(4, floor(W / 8)));
+        if abs(lag) > maxLag || mpv < 0.08
+            lag = 0;
+        end
+
+        c0 = bidi_interlineVerticalCost_TIFF(M);
+        cP = bidi_interlineVerticalCost_TIFF(bidi_applyEvenLineShiftToMean_TIFF(M, lag));
+        cN = bidi_interlineVerticalCost_TIFF(bidi_applyEvenLineShiftToMean_TIFF(M, -lag));
+        [~, best] = min([c0, cP, cN]);
+        if best == 2
+            dx = lag;
+        elseif best == 3
+            dx = -lag;
+        else
+            dx = 0;
+        end
+    end
+
+    function M2 = bidi_applyEvenLineShiftToMean_TIFF(Mm, del)
+        M2 = double(Mm);
+        [Hm, Wm] = size(M2);
+        xloc = 1:Wm;
+        for rr = 2:2:Hm
+            row = double(Mm(rr, :));
+            M2(rr, :) = interp1(xloc, row, xloc - del, 'linear', 0);
+        end
+    end
+
+    function c = bidi_interlineVerticalCost_TIFF(Mm)
+        dv = diff(double(Mm), 1, 1);
+        c = mean(abs(dv(:)));
+    end
+
+    function ensureTiffBidirectionalOffsetForCurrentMovie_TIFF(stitchedFrameReader, nTimepoints)
+        % stitchedFrameReader(ord) -> stitched frame (2D or 3D) from core stitch only (no bidi yet).
+        % Logs immediately when run so status updates in true time order before motion-correction reference.
+        if isempty(stitchedFrameReader) || nTimepoints < 1, return; end
+        Tloc = appState.TIFF;
+
+        if isfield(Tloc, 'bidiLineShiftPx') && ~isempty(Tloc.bidiLineShiftPx)
+            dx0 = Tloc.bidiLineShiftPx;
+            appendToStatusTimed(sprintf('Bidirectional scan line offset: %+.3f px (same session)', dx0));
+            drawnow;
+            return;
+        end
+        if isempty(Tloc.roiData)
+            appState.TIFF.bidiLineShiftPx = 0;
+            appendToStatusTimed('Bidirectional scan offset skipped (no stitch ROI)');
+            drawnow;
+            return;
+        end
+        nSamp = min(64, max(1, nTimepoints));
+        ord = getUniformSampleIdx_TIFF(nTimepoints, nSamp);
+        try
+            f0 = stitchedFrameReader(ord(1));
+            g0 = tiffFrameToGrayDoubleForBidi(f0);
+            [H, W] = size(g0);
+            if H < 4 || W < 8
+                appState.TIFF.bidiLineShiftPx = 0;
+                appendToStatusTimed('Bidirectional scan offset skipped (image too small)');
+                drawnow;
+                return;
+            end
+            acc = zeros(H, W);
+            for ii = 1:numel(ord)
+                fk = stitchedFrameReader(ord(ii));
+                gk = tiffFrameToGrayDoubleForBidi(fk);
+                if ~isequal(size(gk), [H, W])
+                    appState.TIFF.bidiLineShiftPx = 0;
+                    appendToStatusTimed('Bidirectional scan offset skipped (inconsistent frame size)');
+                    drawnow;
+                    return;
+                end
+                acc = acc + gk;
+            end
+            Mmean = acc / numel(ord);
+            dx = estimateBidirectionalDxFromMeanImage_TIFF(Mmean);
+            appState.TIFF.bidiLineShiftPx = dx;
+            appendToStatusTimed(sprintf('Bidirectional scan line offset: %+.3f px', dx));
+            drawnow;
+        catch
+            appState.TIFF.bidiLineShiftPx = 0;
+            appendToStatusTimed('Bidirectional scan offset failed; using 0 px');
+            drawnow;
         end
     end
     
