@@ -45,7 +45,7 @@ appState.Neural = struct('dataFilePath','','coordsFilePath','','tiffFolderPath',
 
 % Shared state & context management
 appState.uiStateCache = struct(); % To save UI settings on mode switch
-appState.sessionCache = struct('data', [], 'fingerprint', []); % For caching processed data
+appState.sessionCache = struct('data', [], 'fingerprint', [], 'coreData', [], 'coreFingerprint', []); % Processed + pre-smooth TIFF core
 appState.sessionState = []; % Snapshot of appState before loading a file state
 appState.loadedStateSnapshot = []; % The state loaded from a file
 % Four-slot architecture additions
@@ -96,7 +96,7 @@ uicontrol('Parent', hTiffLoadPanel, 'Style', 'pushbutton', 'String', 'Load State
     'Position', [295 40 125 30], 'FontSize', 10, 'Callback', @loadStateCallback);
 hMotionCorrectCheckbox = uicontrol('Parent', hTiffLoadPanel, 'Style', 'checkbox', 'String', 'Motion correct', ...
     'Position', [10 10 120 20], 'Value', 0, 'BackgroundColor', [0.94 0.94 0.94], ...
-    'TooltipString', 'Phase correlation (subpixel); median+EMA on shift vectors; imtranslate before averaging/playback');
+    'TooltipString', 'Phase correlation: Ch2 for shift when 2ch; else high-pass single-ch; |shift|<=15 um; median+EMA; imtranslate');
 hReloadDataCheckbox_Tiff = uicontrol('Parent', hTiffLoadPanel, 'Style', 'checkbox', 'String', 'Reload raw data', ...
     'Position', [295 10 130 20], 'Value', 0, 'BackgroundColor', [0.94 0.94 0.94]);
 
@@ -214,7 +214,7 @@ updateDisplayMode();
         restoreUIStateForCurrentMode();
         
         % 5. Invalidate Session Cache and Update Display
-        appState.sessionCache = struct('data', [], 'fingerprint', []);
+        appState.sessionCache = struct('data', [], 'fingerprint', [], 'coreData', [], 'coreFingerprint', []);
         updateDisplayInfo();
     end
 
@@ -900,8 +900,13 @@ updateDisplayMode();
             if isfield(appState.loadedStateSnapshot, 'reloadRaw') && appState.loadedStateSnapshot.reloadRaw == 1
                 [processedData, generationState, success, errMsg] = getOrProcessData_LOADED();
                 if ~success, set(hText, 'String', errMsg); return; end
+                % Only squeeze dim3 for channel-merge RGB (All Channels), not for a 3-plane stack.
                 if strcmp(generationState.mode, 'TIFF') && ndims(processedData) == 4 && size(processedData, 3) == 3
-                    processedData = squeeze(processedData(:,:,1,:));
+                    Tgs = generationState.TIFF;
+                    if Tgs.parsedNumChannels >= 2 && isfield(generationState, 'ui') && isfield(generationState.ui, 'channel') && ...
+                            generationState.ui.channel == Tgs.parsedNumChannels + 1
+                        processedData = squeeze(processedData(:,:,1,:));
+                    end
                 end
                 rollingAvg = round(str2double(get(hRollingAvgInput, 'String')));
                 if isnan(rollingAvg) || rollingAvg < 1, set(hText, 'String', 'Invalid Rolling Average.'); return; end
@@ -916,22 +921,31 @@ updateDisplayMode();
             else
                 generationState = appState.loadedStateSnapshot;
                 precomputedMovie = generationState.movieData;
-                if ndims(precomputedMovie) == 4 && size(precomputedMovie, 3) == 3
-                    precomputedMovie = squeeze(precomputedMovie(:,:,1,:));
+                if ndims(precomputedMovie) == 4 && size(precomputedMovie, 3) == 3 && isfield(generationState, 'TIFF')
+                    Tgs = generationState.TIFF;
+                    if Tgs.parsedNumChannels >= 2 && isfield(generationState, 'ui') && isfield(generationState.ui, 'channel') && ...
+                            generationState.ui.channel == Tgs.parsedNumChannels + 1
+                        precomputedMovie = squeeze(precomputedMovie(:,:,1,:));
+                    end
                 end
                 playerStateToApply = ifisfield(generationState, 'playerState');
                 set(hText, 'String', 'Playing pre-computed movie from loaded state (channel 1)...'); drawnow;
             end
         else
-            channelForMovie = [];
-            if strcmp(appState.currentMode, 'TIFF') && isfield(appState, 'TIFF') && ~isempty(appState.TIFF) && appState.TIFF.parsedNumChannels >= 2
-                cv = get(hChannelDropdown, 'Value');
-                if cv == appState.TIFF.parsedNumChannels + 1
-                    channelForMovie = 1;
+            % Same pipeline as Plot Average: full trial-average tensor stays in session cache
+            % (merge RGB when Channel=All, etc.). Movie shows only the first merged channel
+            % (grayscale), not the full RGB stack — same idea as loaded-state playback.
+            [processedData, generationState, success, errMsg] = getOrProcessData();
+            if ~success, set(hText, 'String', errMsg); return; end
+            
+            % Channel merge (All Channels): pass only plane (:,:,1,:) to the player (channel 1 / R of merge).
+            if strcmp(generationState.mode, 'TIFF') && ndims(processedData) == 4 && size(processedData, 3) == 3
+                Tgs = generationState.TIFF;
+                if Tgs.parsedNumChannels >= 2 && isfield(generationState, 'ui') && isfield(generationState.ui, 'channel') && ...
+                        generationState.ui.channel == Tgs.parsedNumChannels + 1
+                    processedData = squeeze(processedData(:,:,1,:));
                 end
             end
-            [processedData, generationState, success, errMsg] = getOrProcessData(channelForMovie);
-            if ~success, set(hText, 'String', errMsg); return; end
             
             rollingAvg = round(str2double(get(hRollingAvgInput, 'String')));
             if isnan(rollingAvg) || rollingAvg < 1, set(hText, 'String', 'Invalid Rolling Average.'); return; end
@@ -951,76 +965,92 @@ updateDisplayMode();
     end
 
 %% --- DATA CACHING & PROCESSING ---
-    function [processedData, generationState, success, errMsg] = getOrProcessData(channelOverride)
+    function [processedData, generationState, success, errMsg] = getOrProcessData()
         processedData = []; 
-        generationState = [];
+        generationState = []; 
         success = false; 
         errMsg = '';
-        if nargin < 1, channelOverride = []; end
 
-        % 1. Get current settings fingerprint
         generationState = captureFullState();
+        outFp = captureOutputDataCacheFingerprint();
+        coreFp = captureCoreDataCacheFingerprint();
 
-        % 2. When channel override (e.g. for movie when channel is All), skip cache and do not update cache
-        useOverride = strcmp(appState.currentMode, 'TIFF') && ~isempty(channelOverride);
-        if useOverride
-            if (isempty(appState.TIFF.fullFilePath) && isempty(appState.TIFF.selectedFolderPath))
-                errMsg = 'Please load TIFF data first.';
-                success = false;
-                return;
-            end
-            set(hText, 'String', 'Processing data (channel for movie)...'); drawnow;
-            resetStatusStepTimer();
-            [newData, procSuccess, procErrMsg] = getProcessedData(channelOverride);
-            if procSuccess
-                processedData = newData;
-                success = true;
-            else
-                errMsg = procErrMsg;
-                success = false;
-            end
-            return;
-        end
-
-        % 3. Check against cache
+        % 1) Full output cache (rolling avg excluded from key; it is not part of stored tensor)
         if isfield(appState, 'sessionCache') && ...
            ~isempty(appState.sessionCache) && ...
            isfield(appState.sessionCache, 'fingerprint') && ...
            ~isempty(appState.sessionCache.fingerprint) && ...
-           isequaln(generationState, appState.sessionCache.fingerprint)
+           isequaln(outFp, appState.sessionCache.fingerprint)
             
-            % Cache Hit
             resetStatusStepTimer();
             appendToStatusTimed('Using cached data...');
             processedData = appState.sessionCache.data;
             success = true;
-            
-        else
-            % Cache Miss
-            if (strcmp(appState.currentMode, 'TIFF') && isempty(appState.TIFF.fullFilePath) && isempty(appState.TIFF.selectedFolderPath)) || ...
-               (strcmp(appState.currentMode, 'Neural') && (isempty(appState.Neural.psthsData) || isempty(appState.Neural.cellCoords) || isempty(appState.Neural.tiffFolderPath)))
-                errMsg = 'Please load all required data for the current mode first.';
-                if strcmp(appState.currentMode, 'Neural')
-                    errMsg = [errMsg sprintf('\n(Data, Coords, AND original TIFF folder are required.)')];
-                end
-                success = false;
-                return;
-            end
-
-            set(hText, 'String', 'Processing new data...'); drawnow;
-            resetStatusStepTimer();
-            [newData, procSuccess, procErrMsg] = getProcessedData();
-            
-            if procSuccess
-                appState.sessionCache.data = newData;
-                appState.sessionCache.fingerprint = generationState;
-                processedData = newData;
-                success = true;
-            else
-                errMsg = procErrMsg;
-                success = false;
-            end
+            return;
         end
+
+        % 2) TIFF only: reuse MC/trial-avg/dF/F stack; only reapply spatial smoothing
+        if strcmp(appState.currentMode, 'TIFF') && ...
+           isfield(appState.sessionCache, 'coreData') && ~isempty(appState.sessionCache.coreData) && ...
+           isfield(appState.sessionCache, 'coreFingerprint') && ~isempty(appState.sessionCache.coreFingerprint) && ...
+           isequaln(coreFp, appState.sessionCache.coreFingerprint)
+            
+            resetStatusStepTimer();
+            appendToStatusTimed('Reused trial average / motion correction; reapplied smoothing only.');
+            sigma_microns = str2double(get(hSmoothingWindowInput, 'String'));
+            smoothed = appState.sessionCache.coreData;
+            if ~isnan(sigma_microns) && sigma_microns > 0
+                resetStatusStepTimer();
+                smoothed = applySpatialSmoothingStack_TIFF(smoothed, sigma_microns);
+                appendToStatusTimed(sprintf('Applied spatial smoothing (%.1f um).', sigma_microns));
+            end
+            appState.sessionCache.data = smoothed;
+            appState.sessionCache.fingerprint = captureOutputDataCacheFingerprint();
+            processedData = smoothed;
+            success = true;
+            return;
+        end
+
+        % 3) Full recompute
+        if (strcmp(appState.currentMode, 'TIFF') && isempty(appState.TIFF.fullFilePath) && isempty(appState.TIFF.selectedFolderPath)) || ...
+           (strcmp(appState.currentMode, 'Neural') && (isempty(appState.Neural.psthsData) || isempty(appState.Neural.cellCoords) || isempty(appState.Neural.tiffFolderPath)))
+            errMsg = 'Please load all required data for the current mode first.';
+            if strcmp(appState.currentMode, 'Neural')
+                errMsg = [errMsg sprintf('\n(Data, Coords, AND original TIFF folder are required.)')];
+            end
+            success = false;
+            return;
+        end
+
+        set(hText, 'String', 'Processing new data...'); drawnow;
+        resetStatusStepTimer();
+        [coreData, procSuccess, procErrMsg] = getProcessedData([], true);
+        
+        if ~procSuccess
+            errMsg = procErrMsg;
+            success = false;
+            return;
+        end
+
+        newData = coreData;
+        if strcmp(appState.currentMode, 'TIFF')
+            appState.sessionCache.coreData = coreData;
+            appState.sessionCache.coreFingerprint = captureCoreDataCacheFingerprint();
+            sigma_microns = str2double(get(hSmoothingWindowInput, 'String'));
+            if ~isnan(sigma_microns) && sigma_microns > 0
+                resetStatusStepTimer();
+                newData = applySpatialSmoothingStack_TIFF(newData, sigma_microns);
+                appendToStatusTimed(sprintf('Applied spatial smoothing (%.1f um).', sigma_microns));
+            end
+        else
+            appState.sessionCache.coreData = [];
+            appState.sessionCache.coreFingerprint = [];
+        end
+
+        appState.sessionCache.data = newData;
+        appState.sessionCache.fingerprint = captureOutputDataCacheFingerprint();
+        processedData = newData;
+        success = true;
     end
 
     function [processedData, generationState, success, errMsg] = getOrProcessData_LOADED()
@@ -1147,7 +1177,7 @@ updateDisplayMode();
         T.folderFileCount = 0;
         T.bidiLineShiftPx = []; % re-estimate on next TIFF movie build
         appState.loadedMovieData = []; appState.loadedPlayerState = [];
-        appState.sessionCache = struct('data', [], 'fingerprint', []); % Invalidate cache
+        appState.sessionCache = struct('data', [], 'fingerprint', [], 'coreData', [], 'coreFingerprint', []); % Invalidate cache
         appState.TIFF = T;
         
         set(hText, 'String', sprintf('Analyzing file:\n%s...', fileName)); drawnow;
@@ -1170,7 +1200,7 @@ updateDisplayMode();
         T.folderFileCount = 0;
         T.bidiLineShiftPx = [];
         appState.loadedMovieData = []; appState.loadedPlayerState = [];
-        appState.sessionCache = struct('data', [], 'fingerprint', []); % Invalidate cache
+        appState.sessionCache = struct('data', [], 'fingerprint', [], 'coreData', [], 'coreFingerprint', []); % Invalidate cache
         
         set(hText, 'String', sprintf('Analyzing folder:\n%s...', folderName)); drawnow;
         try
@@ -1209,7 +1239,7 @@ updateDisplayMode();
                 error('Data must be 3D (N x t x R) and psths/psthsnp must be the same size.');
             end
             appState.Neural = N;
-            appState.sessionCache = struct('data', [], 'fingerprint', []); % Invalidate cache
+            appState.sessionCache = struct('data', [], 'fingerprint', [], 'coreData', [], 'coreFingerprint', []); % Invalidate cache
             set(hText, 'String', sprintf('Data loaded successfully from:\n%s', fileName)); drawnow;
             updateDisplayInfo();
             appendToStatus(sprintf('Neural data loaded: %s', N.dataFilePath));
@@ -1234,7 +1264,7 @@ updateDisplayMode();
             if ~ismatrix(coords) || size(coords, 2) ~= 2, error('Coordinates must be an N x 2 matrix.'); end
             N.cellCoords = coords;
             appState.Neural = N;
-            appState.sessionCache = struct('data', [], 'fingerprint', []); % Invalidate cache
+            appState.sessionCache = struct('data', [], 'fingerprint', [], 'coreData', [], 'coreFingerprint', []); % Invalidate cache
             set(hText, 'String', sprintf('Coordinates loaded successfully from:\n%s', fileName)); drawnow;
             updateDisplayInfo();
             appendToStatus(sprintf('Neural coords loaded: %s', N.coordsFilePath));
@@ -1257,7 +1287,7 @@ updateDisplayMode();
             firstTiffPath = fullfile(appState.Neural.tiffFolderPath, tiffFiles(1).name);
             processTiffMetadataForInfo_Neural(firstTiffPath); % This populates the rest of appState.Neural
             
-            appState.sessionCache = struct('data', [], 'fingerprint', []); % Invalidate cache
+            appState.sessionCache = struct('data', [], 'fingerprint', [], 'coreData', [], 'coreFingerprint', []); % Invalidate cache
             set(hText, 'String', sprintf('TIFF folder loaded successfully:\n%s', folderName)); drawnow;
             updateDisplayInfo();
             appendToStatus(sprintf('Neural TIFF folder loaded: %s', folderName));
@@ -1286,7 +1316,7 @@ updateDisplayMode();
             appState.TIFF.vareaFilePath = filePath;
             appState.Neural.vareaFilePath = filePath;
 
-            appState.sessionCache = struct('data', [], 'fingerprint', []); % Invalidate cache
+            appState.sessionCache = struct('data', [], 'fingerprint', [], 'coreData', [], 'coreFingerprint', []); % Invalidate cache
             set(hText, 'String', sprintf('Visual areas loaded from:\n%s', fileName)); drawnow;
             updateDisplayInfo();
             appendToStatus(sprintf('Visual areas loaded: %s', filePath));
@@ -1299,8 +1329,10 @@ updateDisplayMode();
 
 %% --- UNIFIED DATA PROCESSING ---
 
-    function [processedData, success, errMsg] = getProcessedData(channelOverride)
+    function [processedData, success, errMsg] = getProcessedData(channelOverride, skipSpatialSmooth)
         processedData = []; success = false; errMsg = '';
+        if nargin < 1, channelOverride = []; end
+        if nargin < 2 || isempty(skipSpatialSmooth), skipSpatialSmooth = false; end
         
         % Step 1: Get raw trial-averaged data for the current mode
         if strcmp(appState.currentMode, 'TIFF')
@@ -1376,27 +1408,15 @@ updateDisplayMode();
             end
         end
         
-        % Step 3: Apply spatial smoothing (for TIFF mode)
-        % Reset the step timer so smoothing time is comparable with/without motion correction.
-        resetStatusStepTimer();
-        if strcmp(appState.currentMode, 'TIFF')
-            sigma_microns = str2double(get(hSmoothingWindowInput, 'String'));
-            if ~isnan(sigma_microns) && sigma_microns > 0
-                td = ndims(processedData);
-                nT = size(processedData, td);
-                if td == 4
-                    nC = size(processedData, 3);
-                    for i = 1:nT
-                        for c = 1:nC
-                            processedData(:,:,c,i) = applySpatialSmoothing_TIFF(processedData(:,:,c,i), sigma_microns);
-                        end
-                    end
-                else
-                    for i = 1:nT
-                        processedData(:,:,i) = applySpatialSmoothing_TIFF(processedData(:,:,i), sigma_microns);
-                    end
+        % Step 3: Apply spatial smoothing (for TIFF mode); optional skip when reusing core cache.
+        if ~skipSpatialSmooth
+            resetStatusStepTimer();
+            if strcmp(appState.currentMode, 'TIFF')
+                sigma_microns = str2double(get(hSmoothingWindowInput, 'String'));
+                if ~isnan(sigma_microns) && sigma_microns > 0
+                    processedData = applySpatialSmoothingStack_TIFF(processedData, sigma_microns);
+                    appendToStatusTimed(sprintf('Applied spatial smoothing (%.1f um).', sigma_microns));
                 end
-                appendToStatusTimed(sprintf('Applied spatial smoothing (%.1f um).', sigma_microns));
             end
         end
         
@@ -1426,7 +1446,20 @@ updateDisplayMode();
         traceYLimAuto = 1; % 1=auto scale; 0=fixed (persisted in playerState)
         traceYLim = [];    % [ymin ymax] when fixed
         
+        % Multicolor is for multiple *planes* (Plane=All), not for channel-merge RGB (Channel=All).
+        % Without this, HxWx3xT merge stacks were misclassified as multi-plane because size(...,3)>=2.
+        isChannelMergeUi = false;
+        if strcmp(generationState.mode, 'TIFF') && isfield(generationState, 'TIFF')
+            Tgs = generationState.TIFF;
+            if Tgs.parsedNumChannels >= 2 && isfield(generationState, 'ui') && isfield(generationState.ui, 'channel')
+                isChannelMergeUi = (generationState.ui.channel == Tgs.parsedNumChannels + 1);
+            end
+        end
+        isRgbChannelMerge = isChannelMergeUi && ndims(precomputedMovie) == 4 && size(precomputedMovie, 3) == 3;
         isMultiPlaneMovie = (ndims(precomputedMovie) == 4 && size(precomputedMovie, 3) >= 2);
+        if isRgbChannelMerge
+            isMultiPlaneMovie = false;
+        end
         numPlanesInMovie = ifelse(isMultiPlaneMovie, size(precomputedMovie, 3), 1);
         isImageData = (ndims(precomputedMovie) == 3) || (ndims(precomputedMovie) == 4 && size(precomputedMovie, 3) >= 2);
         isRgbMovie = (ndims(precomputedMovie) == 4 && size(precomputedMovie, 3) == 3 && ~isMultiPlaneMovie);
@@ -2819,7 +2852,7 @@ updateDisplayMode();
                 set(hForcePositiveCheckbox,'Value',Ssnap.forcePositive);
                 updateDisplayMode();
                 % Invalidate sessionCache so session recomputation uses restored UI
-                appState.sessionCache = struct('data', [], 'fingerprint', []);
+                appState.sessionCache = struct('data', [], 'fingerprint', [], 'coreData', [], 'coreFingerprint', []);
             end
             showInfoCallback();
             set(hModeSelector, 'Enable', 'on');
@@ -2878,7 +2911,7 @@ updateDisplayMode();
             ui.maxFrames = get(hMaxFramesInput, 'String');
             ui.motionCorrect = get(hMotionCorrectCheckbox, 'Value');
             % Bump this token whenever motion-correction internals change to avoid stale cache reuse.
-            ui.motionCorrectAlgoVersion = 'mc_subpix_medema_v3';
+            ui.motionCorrectAlgoVersion = 'mc_subpix_medema_v5';
             % Bidirectional scan-line offset correction (always on for TIFF); bump if algorithm changes.
             ui.tiffBidirectionalScanVersion = 'bidi_line_v1';
         else
@@ -2895,6 +2928,23 @@ updateDisplayMode();
             state.physicalCoords = [N.cellCoords(:,1) ./ N.x_pixels_per_um, N.cellCoords(:,2) ./ N.y_pixels_per_um];
         else
             state.physicalCoords = [];
+        end
+    end
+
+    function state = captureOutputDataCacheFingerprint()
+        % Fingerprint for sessionCache.data: matches everything that affects the cached tensor except
+        % rolling average (applied only when opening the movie player, not stored here).
+        state = captureFullState();
+        if isfield(state, 'ui') && isfield(state.ui, 'rollingAvg')
+            state.ui.rollingAvg = '';
+        end
+    end
+
+    function state = captureCoreDataCacheFingerprint()
+        % Heavier pipeline than spatial smoothing only: trial/MC/dF/F stack before TIFF gaussian smooth.
+        state = captureOutputDataCacheFingerprint();
+        if strcmp(state.mode, 'TIFF') && isfield(state.ui, 'smoothingSigma')
+            state.ui.smoothingSigma = '';
         end
     end
 
@@ -3386,8 +3436,17 @@ updateDisplayMode();
             % When motionCorrect: each raw stitched frame is registered to the reference BEFORE
             % it is added into the trial average (folder) or movie stack (single file).
             motionCorrect = (get(hMotionCorrectCheckbox, 'Value') == 1);
+            mcCapVec = [];
+            mcUseCh2ForMc = false;
+            mcDynSingleCh = false;
             if motionCorrect
                 smoothMotionShift_TIFF('__reset__');
+                mcCapVec = getMcMaxShiftPixels_TIFF(T);
+                mcUseCh2ForMc = (T.parsedNumChannels >= 2);
+                mcDynSingleCh = ~mcUseCh2ForMc;
+                appendToStatusTimed(ifelse(mcUseCh2ForMc, ...
+                    sprintf('Motion correction: shifts from Ch2 (static); |dx|<=%.2f px |dy|<=%.2f px (15 um)', mcCapVec(1), mcCapVec(2)), ...
+                    sprintf('Motion correction: high-pass Ch1 correlation; |dx|<=%.2f px |dy|<=%.2f px (15 um)', mcCapVec(1), mcCapVec(2))));
             end
             ref = [];
             if T.isFolderMode
@@ -3397,6 +3456,7 @@ updateDisplayMode();
                 trialFilePaths = {}; trialLengths = []; infoFirstPerTrial = {};
                 framesPerTrialCh1 = {}; framesPerTrialCh2 = {};
                 framesPerTrialPerPlane = {};
+                framesPerTrialCh2PerPlane = {};
                 for trialNum = selectedTrials(:)'
                     trialFileName = sprintf('%s_%05d.tif', T.fileBaseName, trialNum);
                     trialFilePath = fullfile(T.selectedFolderPath, trialFileName);
@@ -3408,6 +3468,7 @@ updateDisplayMode();
                             framesPerTrialCh1{end+1} = getFramesForPlaneChannel_TIFF(planeList(1), 1, nF);
                             framesPerTrialCh2{end+1} = getFramesForPlaneChannel_TIFF(planeList(1), 2, nF);
                             trialLengths(end+1) = min(numel(framesPerTrialCh1{end}), numel(framesPerTrialCh2{end}));
+                            framesPerTrialCh2PerPlane{end+1} = [];
                         else
                             fp = cell(1, numel(planeList));
                             for p = 1:numel(planeList)
@@ -3415,6 +3476,15 @@ updateDisplayMode();
                             end
                             framesPerTrialPerPlane{end+1} = fp;
                             trialLengths(end+1) = min(cellfun(@numel, fp));
+                            if motionCorrect && T.parsedNumChannels >= 2
+                                fp2 = cell(1, numel(planeList));
+                                for p = 1:numel(planeList)
+                                    fp2{p} = getFramesForPlaneChannel_TIFF(planeList(p), 2, nF);
+                                end
+                                framesPerTrialCh2PerPlane{end+1} = fp2;
+                            else
+                                framesPerTrialCh2PerPlane{end+1} = [];
+                            end
                         end
                         infoFirstPerTrial{end+1} = info(1);
                     end
@@ -3450,28 +3520,40 @@ updateDisplayMode();
                     nPl = numel(planeList);
                     if isMerge
                         if nPl == 1
-                            fetchRef = @(ord) double(stitchFrame_TIFF(imread(trialFilePaths{1}, framesPerTrialCh1{1}(ord)), infoFirstPerTrial{1}, T.roiData));
-                            ref = buildRobustReference_TIFF(fetchRef, refOrdinals);
+                            fetchRef = @(ord) double(stitchFrame_TIFF(imread(trialFilePaths{1}, framesPerTrialCh2{1}(ord)), infoFirstPerTrial{1}, T.roiData));
+                            ref = buildRobustReference_TIFF(fetchRef, refOrdinals, mcCapVec, false);
                         else
                             ref = zeros(H, W, nPl, 'double');
                             for p = 1:nPl
                                 nF1 = numel(imfinfo(trialFilePaths{1}));
-                                fp1 = getFramesForPlaneChannel_TIFF(planeList(p), 1, nF1);
-                                fetchRef = @(ord) double(stitchFrame_TIFF(imread(trialFilePaths{1}, fp1(ord)), infoFirstPerTrial{1}, T.roiData));
-                                ref(:, :, p) = buildRobustReference_TIFF(fetchRef, refOrdinals);
+                                fp2r = getFramesForPlaneChannel_TIFF(planeList(p), 2, nF1);
+                                fetchRef = @(ord) double(stitchFrame_TIFF(imread(trialFilePaths{1}, fp2r(ord)), infoFirstPerTrial{1}, T.roiData));
+                                ref(:, :, p) = buildRobustReference_TIFF(fetchRef, refOrdinals, mcCapVec, false);
                             end
                         end
                     else
                         if nPl == 1
-                            fp = framesPerTrialPerPlane{1};
-                            fetchRef = @(ord) double(stitchFrame_TIFF(imread(trialFilePaths{1}, fp{1}(ord)), infoFirstPerTrial{1}, T.roiData));
-                            ref = buildRobustReference_TIFF(fetchRef, refOrdinals);
+                            if mcUseCh2ForMc
+                                fp2r = framesPerTrialCh2PerPlane{1}{1};
+                                fetchRef = @(ord) double(stitchFrame_TIFF(imread(trialFilePaths{1}, fp2r(ord)), infoFirstPerTrial{1}, T.roiData));
+                                ref = buildRobustReference_TIFF(fetchRef, refOrdinals, mcCapVec, false);
+                            else
+                                fp = framesPerTrialPerPlane{1};
+                                fetchRef = @(ord) double(stitchFrame_TIFF(imread(trialFilePaths{1}, fp{1}(ord)), infoFirstPerTrial{1}, T.roiData));
+                                ref = buildRobustReference_TIFF(fetchRef, refOrdinals, mcCapVec, mcDynSingleCh);
+                            end
                         else
                             ref = zeros(H, W, nPl, 'double');
                             for p = 1:nPl
-                                fp = framesPerTrialPerPlane{1};
-                                fetchRef = @(ord) double(stitchFrame_TIFF(imread(trialFilePaths{1}, fp{p}(ord)), infoFirstPerTrial{1}, T.roiData));
-                                ref(:, :, p) = buildRobustReference_TIFF(fetchRef, refOrdinals);
+                                if mcUseCh2ForMc
+                                    fp2r = framesPerTrialCh2PerPlane{1}{p};
+                                    fetchRef = @(ord) double(stitchFrame_TIFF(imread(trialFilePaths{1}, fp2r(ord)), infoFirstPerTrial{1}, T.roiData));
+                                    ref(:, :, p) = buildRobustReference_TIFF(fetchRef, refOrdinals, mcCapVec, false);
+                                else
+                                    fp = framesPerTrialPerPlane{1};
+                                    fetchRef = @(ord) double(stitchFrame_TIFF(imread(trialFilePaths{1}, fp{p}(ord)), infoFirstPerTrial{1}, T.roiData));
+                                    ref(:, :, p) = buildRobustReference_TIFF(fetchRef, refOrdinals, mcCapVec, mcDynSingleCh);
+                                end
                             end
                         end
                     end
@@ -3497,18 +3579,28 @@ updateDisplayMode();
                             if nPlM == 1
                                 f1 = double(stitchFrame_TIFF(imread(trialFilePaths{k}, framesPerTrialCh1{k}(i)), infoFirstPerTrial{k}, T.roiData));
                                 f2 = double(stitchFrame_TIFF(imread(trialFilePaths{k}, framesPerTrialCh2{k}(i)), infoFirstPerTrial{k}, T.roiData));
-                                if motionCorrect, mcTic = tic; end
-                                f1 = applyMotionCorrect_TIFF(ref, f1, motionCorrect, [], [], 1);
-                                f2 = applyMotionCorrect_TIFF(ref, f2, motionCorrect, [], [], 2);
-                                if motionCorrect, mcTime = mcTime + toc(mcTic); end
+                                if motionCorrect
+                                    mcTic = tic;
+                                    [dy, dx] = getSmoothedMcShift_TIFF(ref, f2, mcCapVec, 1, 0, false, false);
+                                    f1 = warpMcTranslateFrame_TIFF(f1, dx, dy);
+                                    f2 = warpMcTranslateFrame_TIFF(f2, dx, dy);
+                                    mcTime = mcTime + toc(mcTic);
+                                end
                             else
                                 f1 = 0; f2 = 0;
                                 if motionCorrect, mcTic = tic; end
                                 for p = 1:nPlM
                                     fp1 = getFramesForPlaneChannel_TIFF(planeList(p), 1, nFk);
                                     fp2 = getFramesForPlaneChannel_TIFF(planeList(p), 2, nFk);
-                                    f1 = f1 + applyMotionCorrect_TIFF(ref, double(stitchFrame_TIFF(imread(trialFilePaths{k}, fp1(i)), infoFirstPerTrial{k}, T.roiData)), motionCorrect, [], p, 1);
-                                    f2 = f2 + applyMotionCorrect_TIFF(ref, double(stitchFrame_TIFF(imread(trialFilePaths{k}, fp2(i)), infoFirstPerTrial{k}, T.roiData)), motionCorrect, [], p, 2);
+                                    ch1p = double(stitchFrame_TIFF(imread(trialFilePaths{k}, fp1(i)), infoFirstPerTrial{k}, T.roiData));
+                                    ch2p = double(stitchFrame_TIFF(imread(trialFilePaths{k}, fp2(i)), infoFirstPerTrial{k}, T.roiData));
+                                    if motionCorrect
+                                        [dy, dx] = getSmoothedMcShift_TIFF(ref, ch2p, mcCapVec, p, p, false, false);
+                                        ch1p = warpMcTranslateFrame_TIFF(ch1p, dx, dy);
+                                        ch2p = warpMcTranslateFrame_TIFF(ch2p, dx, dy);
+                                    end
+                                    f1 = f1 + ch1p;
+                                    f2 = f2 + ch2p;
                                 end
                                 if motionCorrect, mcTime = mcTime + toc(mcTic); end
                             end
@@ -3547,7 +3639,14 @@ updateDisplayMode();
                             for i = 1:minTrialLength
                                 for p = 1:nPlF2
                                     if motionCorrect, mcTic = tic; end
-                                    mcFrame = applyMotionCorrect_TIFF(ref, double(stitchFrame_TIFF(imread(trialFilePaths{k}, fp{p}(i)), infoFirstPerTrial{k}, T.roiData)), motionCorrect, [], p);
+                                    ch1p = double(stitchFrame_TIFF(imread(trialFilePaths{k}, fp{p}(i)), infoFirstPerTrial{k}, T.roiData));
+                                    if motionCorrect && mcUseCh2ForMc
+                                        fp2k = framesPerTrialCh2PerPlane{k}{p};
+                                        ch2p = double(stitchFrame_TIFF(imread(trialFilePaths{k}, fp2k(i)), infoFirstPerTrial{k}, T.roiData));
+                                        mcFrame = applyMotionCorrect_TIFF(ref, ch1p, motionCorrect, mcCapVec, p, p, false, ch2p, false);
+                                    else
+                                        mcFrame = applyMotionCorrect_TIFF(ref, ch1p, motionCorrect, mcCapVec, p, p, false, [], mcDynSingleCh);
+                                    end
                                     if motionCorrect, mcTime = mcTime + toc(mcTic); end
                                     avgMovie(:,:,p,i) = avgMovie(:,:,p,i) + mcFrame;
                                 end
@@ -3572,7 +3671,14 @@ updateDisplayMode();
                             fp = framesPerTrialPerPlane{k};
                             for i = 1:minTrialLength
                                 if motionCorrect, mcTic = tic; end
-                                mcFrame = applyMotionCorrect_TIFF(ref, double(stitchFrame_TIFF(imread(trialFilePaths{k}, fp{1}(i)), infoFirstPerTrial{k}, T.roiData)), motionCorrect);
+                                ch1p = double(stitchFrame_TIFF(imread(trialFilePaths{k}, fp{1}(i)), infoFirstPerTrial{k}, T.roiData));
+                                if motionCorrect && mcUseCh2ForMc
+                                    fp2k = framesPerTrialCh2PerPlane{k}{1};
+                                    ch2p = double(stitchFrame_TIFF(imread(trialFilePaths{k}, fp2k(i)), infoFirstPerTrial{k}, T.roiData));
+                                    mcFrame = applyMotionCorrect_TIFF(ref, ch1p, motionCorrect, mcCapVec, 1, 0, false, ch2p, false);
+                                else
+                                    mcFrame = applyMotionCorrect_TIFF(ref, ch1p, motionCorrect, mcCapVec, 1, 0, false, [], mcDynSingleCh);
+                                end
                                 if motionCorrect, mcTime = mcTime + toc(mcTic); end
                                 avgMovie(:,:,i) = avgMovie(:,:,i) + mcFrame;
                             end
@@ -3620,31 +3726,53 @@ updateDisplayMode();
                         nRefFrames = getMcRefSampleCount_TIFF(mcFr, 2, nT);
                         refOrdinals = getUniformSampleIdx_TIFF(nT, nRefFrames);
                         if nPlF == 1
-                            fetchRef = @(ord) double(stitchFrame_TIFF(imread(T.fullFilePath, allF1(ord)), info(1), T.roiData));
-                            ref = buildRobustReference_TIFF(fetchRef, refOrdinals);
+                            fetchRef = @(ord) double(stitchFrame_TIFF(imread(T.fullFilePath, allF2(ord)), info(1), T.roiData));
+                            ref = buildRobustReference_TIFF(fetchRef, refOrdinals, mcCapVec, false);
                         else
                             ref = zeros(H, W, nPlF, 'double');
                             for p = 1:nPlF
-                                fp1 = getFramesForPlaneChannel_TIFF(planeList(p), 1, nF);
-                                fetchRef = @(ord) double(stitchFrame_TIFF(imread(T.fullFilePath, fp1(ord)), info(1), T.roiData));
-                                ref(:, :, p) = buildRobustReference_TIFF(fetchRef, refOrdinals);
+                                fp2r = getFramesForPlaneChannel_TIFF(planeList(p), 2, nF);
+                                fetchRef = @(ord) double(stitchFrame_TIFF(imread(T.fullFilePath, fp2r(ord)), info(1), T.roiData));
+                                ref(:, :, p) = buildRobustReference_TIFF(fetchRef, refOrdinals, mcCapVec, false);
                             end
                         end
                     else
                         if nPlF == 1
-                            allFramesRef = getFramesForPlaneChannel_TIFF(planeList(1), channelNum, nF);
-                            nRefFrames = getMcRefSampleCount_TIFF(mcFr, 2, numel(allFramesRef));
-                            refOrdinals = getUniformSampleIdx_TIFF(numel(allFramesRef), nRefFrames);
-                            fetchRef = @(ord) double(stitchFrame_TIFF(imread(T.fullFilePath, allFramesRef(ord)), info(1), T.roiData));
-                            ref = buildRobustReference_TIFF(fetchRef, refOrdinals);
+                            if mcUseCh2ForMc
+                                fp2r = getFramesForPlaneChannel_TIFF(planeList(1), 2, nF);
+                                if ~isnan(maxFramesVal) && maxFramesVal > 0
+                                    fp2r = fp2r(1:min(numel(fp2r), round(maxFramesVal)));
+                                end
+                                nRefFrames = getMcRefSampleCount_TIFF(mcFr, 2, numel(fp2r));
+                                refOrdinals = getUniformSampleIdx_TIFF(numel(fp2r), nRefFrames);
+                                fetchRef = @(ord) double(stitchFrame_TIFF(imread(T.fullFilePath, fp2r(ord)), info(1), T.roiData));
+                                ref = buildRobustReference_TIFF(fetchRef, refOrdinals, mcCapVec, false);
+                            else
+                                allFramesRef = getFramesForPlaneChannel_TIFF(planeList(1), channelNum, nF);
+                                if ~isnan(maxFramesVal) && maxFramesVal > 0
+                                    allFramesRef = allFramesRef(1:min(numel(allFramesRef), round(maxFramesVal)));
+                                end
+                                nRefFrames = getMcRefSampleCount_TIFF(mcFr, 2, numel(allFramesRef));
+                                refOrdinals = getUniformSampleIdx_TIFF(numel(allFramesRef), nRefFrames);
+                                fetchRef = @(ord) double(stitchFrame_TIFF(imread(T.fullFilePath, allFramesRef(ord)), info(1), T.roiData));
+                                ref = buildRobustReference_TIFF(fetchRef, refOrdinals, mcCapVec, mcDynSingleCh);
+                            end
                         else
                             ref = zeros(H, W, nPlF, 'double');
                             for p = 1:nPlF
-                                fpRef = getFramesForPlaneChannel_TIFF(planeList(p), channelNum, nF);
-                                nRefFrames = getMcRefSampleCount_TIFF(mcFr, 2, numel(fpRef));
-                                refOrdinals = getUniformSampleIdx_TIFF(numel(fpRef), nRefFrames);
-                                fetchRef = @(ord) double(stitchFrame_TIFF(imread(T.fullFilePath, fpRef(ord)), info(1), T.roiData));
-                                ref(:, :, p) = buildRobustReference_TIFF(fetchRef, refOrdinals);
+                                if mcUseCh2ForMc
+                                    fpRef2 = getFramesForPlaneChannel_TIFF(planeList(p), 2, nF);
+                                    nRefFrames = getMcRefSampleCount_TIFF(mcFr, 2, numel(fpRef2));
+                                    refOrdinals = getUniformSampleIdx_TIFF(numel(fpRef2), nRefFrames);
+                                    fetchRef = @(ord) double(stitchFrame_TIFF(imread(T.fullFilePath, fpRef2(ord)), info(1), T.roiData));
+                                    ref(:, :, p) = buildRobustReference_TIFF(fetchRef, refOrdinals, mcCapVec, false);
+                                else
+                                    fpRef = getFramesForPlaneChannel_TIFF(planeList(p), channelNum, nF);
+                                    nRefFrames = getMcRefSampleCount_TIFF(mcFr, 2, numel(fpRef));
+                                    refOrdinals = getUniformSampleIdx_TIFF(numel(fpRef), nRefFrames);
+                                    fetchRef = @(ord) double(stitchFrame_TIFF(imread(T.fullFilePath, fpRef(ord)), info(1), T.roiData));
+                                    ref(:, :, p) = buildRobustReference_TIFF(fetchRef, refOrdinals, mcCapVec, mcDynSingleCh);
+                                end
                             end
                         end
                     end
@@ -3664,26 +3792,32 @@ updateDisplayMode();
                     nPlFM = numel(planeList);
                     for i = 1:nT
                         if nPlFM == 1
-                            if motionCorrect, mcTic = tic; end
-                            f1 = applyMotionCorrect_TIFF(ref, double(stitchFrame_TIFF(imread(T.fullFilePath, allF1(i)), info(1), T.roiData)), motionCorrect, [], [], 1);
-                            if motionCorrect, singleMcTime = singleMcTime + toc(mcTic); end
-                            if motionCorrect, mcTic = tic; end
-                            f2 = applyMotionCorrect_TIFF(ref, double(stitchFrame_TIFF(imread(T.fullFilePath, allF2(i)), info(1), T.roiData)), motionCorrect, [], [], 2);
-                            if motionCorrect, singleMcTime = singleMcTime + toc(mcTic); end
+                            f1 = double(stitchFrame_TIFF(imread(T.fullFilePath, allF1(i)), info(1), T.roiData));
+                            f2 = double(stitchFrame_TIFF(imread(T.fullFilePath, allF2(i)), info(1), T.roiData));
+                            if motionCorrect
+                                mcTic = tic;
+                                [dy, dx] = getSmoothedMcShift_TIFF(ref, f2, mcCapVec, 1, 0, false, false);
+                                f1 = warpMcTranslateFrame_TIFF(f1, dx, dy);
+                                f2 = warpMcTranslateFrame_TIFF(f2, dx, dy);
+                                singleMcTime = singleMcTime + toc(mcTic);
+                            end
                         else
                             f1 = 0; f2 = 0;
+                            if motionCorrect, mcTic = tic; end
                             for p = 1:nPlFM
                                 fp1 = getFramesForPlaneChannel_TIFF(planeList(p), 1, nF);
                                 fp2 = getFramesForPlaneChannel_TIFF(planeList(p), 2, nF);
-                                if motionCorrect, mcTic = tic; end
-                                tmp1 = applyMotionCorrect_TIFF(ref, double(stitchFrame_TIFF(imread(T.fullFilePath, fp1(i)), info(1), T.roiData)), motionCorrect, [], p, 1);
-                                if motionCorrect, singleMcTime = singleMcTime + toc(mcTic); end
-                                f1 = f1 + tmp1;
-                                if motionCorrect, mcTic = tic; end
-                                tmp2 = applyMotionCorrect_TIFF(ref, double(stitchFrame_TIFF(imread(T.fullFilePath, fp2(i)), info(1), T.roiData)), motionCorrect, [], p, 2);
-                                if motionCorrect, singleMcTime = singleMcTime + toc(mcTic); end
-                                f2 = f2 + tmp2;
+                                ch1p = double(stitchFrame_TIFF(imread(T.fullFilePath, fp1(i)), info(1), T.roiData));
+                                ch2p = double(stitchFrame_TIFF(imread(T.fullFilePath, fp2(i)), info(1), T.roiData));
+                                if motionCorrect
+                                    [dy, dx] = getSmoothedMcShift_TIFF(ref, ch2p, mcCapVec, p, p, false, false);
+                                    ch1p = warpMcTranslateFrame_TIFF(ch1p, dx, dy);
+                                    ch2p = warpMcTranslateFrame_TIFF(ch2p, dx, dy);
+                                end
+                                f1 = f1 + ch1p;
+                                f2 = f2 + ch2p;
                             end
+                            if motionCorrect, singleMcTime = singleMcTime + toc(mcTic); end
                         end
                         pr = prctile(f1(:), [1 99]); pg = prctile(f2(:), [1 99]);
                         avgMovie(:,:,1,i) = min(1, max(0, (f1 - pr(1)) / (diff(pr) + eps)));
@@ -3701,7 +3835,14 @@ updateDisplayMode();
                             for p = 1:numel(planeList)
                                 fp = getFramesForPlaneChannel_TIFF(planeList(p), channelNum, nF);
                                 if motionCorrect, mcTic = tic; end
-                                tmp = applyMotionCorrect_TIFF(ref, double(stitchFrame_TIFF(imread(T.fullFilePath, fp(i)), info(1), T.roiData)), motionCorrect, [], p);
+                                ch1p = double(stitchFrame_TIFF(imread(T.fullFilePath, fp(i)), info(1), T.roiData));
+                                if motionCorrect && mcUseCh2ForMc
+                                    fp2 = getFramesForPlaneChannel_TIFF(planeList(p), 2, nF);
+                                    ch2p = double(stitchFrame_TIFF(imread(T.fullFilePath, fp2(i)), info(1), T.roiData));
+                                    tmp = applyMotionCorrect_TIFF(ref, ch1p, motionCorrect, mcCapVec, p, p, false, ch2p, false);
+                                else
+                                    tmp = applyMotionCorrect_TIFF(ref, ch1p, motionCorrect, mcCapVec, p, p, false, [], mcDynSingleCh);
+                                end
                                 if motionCorrect, singleMcTime = singleMcTime + toc(mcTic); end
                                 avgMovie(:,:,p,i) = tmp;
                             end
@@ -3711,7 +3852,14 @@ updateDisplayMode();
                         for i = 1:numel(allFrames)
                             fp = getFramesForPlaneChannel_TIFF(planeList(1), channelNum, nF);
                             if motionCorrect, mcTic = tic; end
-                            sumFrame = applyMotionCorrect_TIFF(ref, double(stitchFrame_TIFF(imread(T.fullFilePath, fp(i)), info(1), T.roiData)), motionCorrect);
+                            ch1p = double(stitchFrame_TIFF(imread(T.fullFilePath, fp(i)), info(1), T.roiData));
+                            if motionCorrect && mcUseCh2ForMc
+                                fp2 = getFramesForPlaneChannel_TIFF(planeList(1), 2, nF);
+                                ch2p = double(stitchFrame_TIFF(imread(T.fullFilePath, fp2(i)), info(1), T.roiData));
+                                sumFrame = applyMotionCorrect_TIFF(ref, ch1p, motionCorrect, mcCapVec, 1, 0, false, ch2p, false);
+                            else
+                                sumFrame = applyMotionCorrect_TIFF(ref, ch1p, motionCorrect, mcCapVec, 1, 0, false, [], mcDynSingleCh);
+                            end
                             if motionCorrect, singleMcTime = singleMcTime + toc(mcTic); end
                             avgMovie(:,:,i) = sumFrame;
                         end
@@ -3773,10 +3921,12 @@ updateDisplayMode();
         end
     end
 
-    function ref = buildRobustReference_TIFF(fetchFrameFcn, sampleOrdinals)
+    function ref = buildRobustReference_TIFF(fetchFrameFcn, sampleOrdinals, mcCapVec, refAlignDynamic)
         % Build a robust reference in two passes:
         % 1) Mean of sampled frames.
         % 2) Re-register those frames to pass-1 mean and re-average.
+        if nargin < 3 || isempty(mcCapVec), mcCapVec = getMcMaxShiftPixels_TIFF(appState.TIFF); end
+        if nargin < 4 || isempty(refAlignDynamic), refAlignDynamic = false; end
         nRefFrames = numel(sampleOrdinals);
         if nRefFrames < 1
             ref = [];
@@ -3792,14 +3942,43 @@ updateDisplayMode();
         ref0 = mean(stack, 3);
         alignedSum = zeros(H, W, 'double');
         for ii = 1:nRefFrames
-            alignedSum = alignedSum + applyMotionCorrect_TIFF(ref0, stack(:,:,ii), true, [], [], 0, true);
+            alignedSum = alignedSum + applyMotionCorrect_TIFF(ref0, stack(:,:,ii), true, mcCapVec, [], 0, true, [], refAlignDynamic);
         end
         ref = alignedSum / nRefFrames;
     end
 
-    function [dy, dx] = getPhaseCorrShift_TIFF(ref, img, maxShiftPx)
+    function capPx = getMcMaxShiftPixels_TIFF(T, capUm)
+        % Pixels per micron along X and Y from stitched metadata (x_pixels_per_unit, y_pixels_per_unit).
+        if nargin < 2 || isempty(capUm), capUm = 15; end
+        pxu = T.x_pixels_per_unit; pyu = T.y_pixels_per_unit;
+        if isempty(pxu) || ~isfinite(pxu) || pxu <= 0, pxu = 1; end
+        if isempty(pyu) || ~isfinite(pyu) || pyu <= 0, pyu = 1; end
+        capPx = [capUm * pxu, capUm * pyu];
+    end
+
+    function out = emphasizeStaticStructureForMc_TIFF(im)
+        % High-pass (residual after wide Gaussian blur) to down-weight global brightness / soma flashes
+        % in single-channel functional data before phase correlation.
+        im = double(im);
+        [Hm, Wm] = size(im);
+        sigma = max(2, min(Hm, Wm) / 48);
+        try
+            lowf = imgaussfilt(im, sigma);
+        catch
+            lowf = im;
+        end
+        out = im - lowf;
+    end
+
+    function [dy, dx] = getPhaseCorrShift_TIFF(ref, img, maxShiftPx, useDynamicPreprocess)
         % Phase correlation for 2D translation. Returns subpixel [dy, dx] for imtranslate(...,[dx,dy]).
+        % maxShiftPx: scalar (same cap both axes) or [maxDx maxDy] in pixels (e.g. from 15 um * px/um).
+        if nargin < 4 || isempty(useDynamicPreprocess), useDynamicPreprocess = false; end
         ref = double(ref); img = double(img);
+        if useDynamicPreprocess
+            ref = emphasizeStaticStructureForMc_TIFF(ref);
+            img = emphasizeStaticStructureForMc_TIFF(img);
+        end
         % Clip to percentile range to reduce hot pixels / outliers
         pr = prctile(ref(:), [1 99]); ref = min(max(ref, pr(1)), pr(2));
         pr = prctile(img(:), [1 99]); img = min(max(img, pr(1)), pr(2));
@@ -3848,9 +4027,39 @@ updateDisplayMode();
         dy = iy_sub - 1; dx = ix_sub - 1;
         if dy > Ly/2, dy = dy - Ly; end
         if dx > Lx/2, dx = dx - Lx; end
-        if nargin >= 3 && ~isempty(maxShiftPx) && maxShiftPx > 0
-            dy = max(-maxShiftPx, min(maxShiftPx, dy));
-            dx = max(-maxShiftPx, min(maxShiftPx, dx));
+        if nargin >= 3 && ~isempty(maxShiftPx)
+            if isscalar(maxShiftPx)
+                maxDx = maxShiftPx; maxDy = maxShiftPx;
+            else
+                maxDx = maxShiftPx(1); maxDy = maxShiftPx(2);
+            end
+            if isfinite(maxDx) && maxDx > 0, dx = max(-maxDx, min(maxDx, dx)); end
+            if isfinite(maxDy) && maxDy > 0, dy = max(-maxDy, min(maxDy, dy)); end
+        end
+    end
+
+    function [dy, dx] = getSmoothedMcShift_TIFF(ref, frameForCorr, maxShiftPx, planeIdx, streamTag, skipShiftSmooth, useDynamicPreprocess)
+        if nargin < 4 || isempty(planeIdx), planeIdx = 1; end
+        if nargin < 5 || isempty(streamTag), streamTag = 0; end
+        if nargin < 6 || isempty(skipShiftSmooth), skipShiftSmooth = false; end
+        if nargin < 7 || isempty(useDynamicPreprocess), useDynamicPreprocess = false; end
+        if ndims(ref) >= 3 && size(ref, 3) > 1
+            refUse = ref(:, :, planeIdx);
+        else
+            refUse = ref;
+        end
+        [dy, dx] = getPhaseCorrShift_TIFF(refUse, frameForCorr, maxShiftPx, useDynamicPreprocess);
+        [Hf, Wf] = size(frameForCorr);
+        if ~skipShiftSmooth
+            [dy, dx] = smoothMotionShift_TIFF(dy, dx, planeIdx, streamTag, Hf, Wf);
+        end
+    end
+
+    function out = warpMcTranslateFrame_TIFF(f, dx, dy)
+        try
+            out = imtranslate(f, [dx, dy], 'OutputView', 'same', 'Interpolation', 'bicubic');
+        catch
+            out = imtranslate(f, [dx, dy], 'OutputView', 'same');
         end
     end
 
@@ -3906,29 +4115,18 @@ updateDisplayMode();
         dyOut = emaDy{key};
     end
 
-    function frameOut = applyMotionCorrect_TIFF(ref, frame, doMC, maxShiftPx, planeIdx, streamTag, skipShiftSmooth)
+    function frameOut = applyMotionCorrect_TIFF(ref, frame, doMC, maxShiftPx, planeIdx, streamTag, skipShiftSmooth, frameForCorr, useDynamicPreprocess)
         if ~doMC, frameOut = frame; return; end
-        if nargin < 4, maxShiftPx = 25; end
+        if nargin < 4 || isempty(maxShiftPx), maxShiftPx = getMcMaxShiftPixels_TIFF(appState.TIFF); end
         if nargin < 5, planeIdx = []; end
         if nargin < 6 || isempty(streamTag), streamTag = 0; end
         if nargin < 7 || isempty(skipShiftSmooth), skipShiftSmooth = false; end
-        % Multi-plane (Plane=All): ref is H x W x P; each plane registers to its own mean reference.
-        if ndims(ref) >= 3 && size(ref, 3) > 1
-            if isempty(planeIdx), planeIdx = 1; end
-            refUse = ref(:, :, planeIdx);
-        else
-            refUse = ref;
-        end
-        [dy, dx] = getPhaseCorrShift_TIFF(refUse, frame, maxShiftPx);
-        [Hf, Wf] = size(frame);
-        if ~skipShiftSmooth
-            [dy, dx] = smoothMotionShift_TIFF(dy, dx, planeIdx, streamTag, Hf, Wf);
-        end
-        try
-            frameOut = imtranslate(frame, [dx, dy], 'OutputView', 'same', 'Interpolation', 'bicubic');
-        catch
-            frameOut = imtranslate(frame, [dx, dy], 'OutputView', 'same');
-        end
+        if nargin < 8, frameForCorr = []; end
+        if nargin < 9 || isempty(useDynamicPreprocess), useDynamicPreprocess = false; end
+        if isempty(planeIdx), planeIdx = 1; end
+        if isempty(frameForCorr), frameForCorr = frame; end
+        [dy, dx] = getSmoothedMcShift_TIFF(ref, frameForCorr, maxShiftPx, planeIdx, streamTag, skipShiftSmooth, useDynamicPreprocess);
+        frameOut = warpMcTranslateFrame_TIFF(frame, dx, dy);
     end
 
     function [pixelWidth, pixelHeight, physicalWidth, physicalHeight] = getStitchDimensions_TIFF(si_rois, zoom)
@@ -4160,6 +4358,28 @@ updateDisplayMode();
             smoothedImg = imgaussfilt(img, [sigma_y_pixels, sigma_x_pixels]);
         else
             smoothedImg = img;
+        end
+    end
+
+    function out = applySpatialSmoothingStack_TIFF(processedData, sigma_microns)
+        % Apply per-frame spatial smoothing to HxWxT or HxWxCxT TIFF movies (same as getProcessedData step 3).
+        out = processedData;
+        if isempty(sigma_microns) || isnan(sigma_microns) || sigma_microns <= 0
+            return;
+        end
+        td = ndims(out);
+        nT = size(out, td);
+        if td == 4
+            nC = size(out, 3);
+            for i = 1:nT
+                for c = 1:nC
+                    out(:,:,c,i) = applySpatialSmoothing_TIFF(out(:,:,c,i), sigma_microns);
+                end
+            end
+        else
+            for i = 1:nT
+                out(:,:,i) = applySpatialSmoothing_TIFF(out(:,:,i), sigma_microns);
+            end
         end
     end
 
@@ -4543,6 +4763,34 @@ updateDisplayMode();
         function updateAllOverlays(), toggleAllOverlays(); end
     end
 
+    function updateContrast_local(sourceSlider, hCtrlPanel, hMinSlider, hMaxSlider, hAxes)
+        % Nested under neuroView (not inside createContrastControls) so PostSet listeners stay
+        % resolvable after file edits; pass explicit graphics handles from createContrastControls.
+        if nargin < 5
+            return;
+        end
+        if nargin < 1 || isempty(sourceSlider), sourceSlider = ''; end
+        minVal = get(hMinSlider, 'Value');
+        maxVal = get(hMaxSlider, 'Value');
+        if minVal >= maxVal
+            if strcmp(sourceSlider, 'min')
+                minVal = maxVal - 1e-9;
+                set(hMinSlider, 'Value', minVal);
+            elseif strcmp(sourceSlider, 'max')
+                maxVal = minVal + 1e-9;
+                set(hMaxSlider, 'Value', maxVal);
+            end
+        end
+        set(hAxes, 'CLim', [minVal, maxVal]);
+        panelUD = get(hCtrlPanel, 'UserData');
+        if isfield(panelUD, 'displayHandles')
+            modeOptions = get(panelUD.displayHandles.modeDropdown, 'String');
+            currentMode = modeOptions{get(panelUD.displayHandles.modeDropdown, 'Value')};
+            panelUD.customModeContrasts.(currentMode) = [minVal, maxVal];
+            set(hCtrlPanel, 'UserData', panelUD);
+        end
+    end
+
     function handles = createContrastControls(hParent, hAxes, panelPosition, modeContrasts, displayHandles)
         hCtrlPanel = uipanel('Parent', hParent, 'Title', 'Contrast & Colormap', 'Units', 'normalized', 'Position', panelPosition);
         panelUserData.lastAppliedCmapName = 'gray';
@@ -4565,8 +4813,8 @@ updateDisplayMode();
         
         set(hMinRangeDropdown, 'Callback', @(s,e) updateSliderRange(s, hMinSlider));
         set(hMaxRangeDropdown, 'Callback', @(s,e) updateSliderRange(s, hMaxSlider));
-        addlistener(hMinSlider, 'Value', 'PostSet', @(s,e) updateContrast_local('min'));
-        addlistener(hMaxSlider, 'Value', 'PostSet', @(s,e) updateContrast_local('max'));
+        addlistener(hMinSlider, 'Value', 'PostSet', @(s,e) updateContrast_local('min', hCtrlPanel, hMinSlider, hMaxSlider, hAxes));
+        addlistener(hMaxSlider, 'Value', 'PostSet', @(s,e) updateContrast_local('max', hCtrlPanel, hMinSlider, hMaxSlider, hAxes));
         set(hColormapDropdown, 'Callback', @(s,e) applyColormapWrapper(s));
         set(hInvertCmapCheckbox, 'Callback', @(s,e) applyColormapWrapper(s, true));
         
@@ -4608,7 +4856,7 @@ updateDisplayMode();
             set(hMaxSlider, 'Value', max(get(hMaxSlider,'Min'), min(get(hMaxSlider,'Max'), maxVal)) );
             
             % Apply the final CLim to the axes
-            updateContrast_local();
+            updateContrast_local('', hCtrlPanel, hMinSlider, hMaxSlider, hAxes);
         end
         
         function setPlayerStateWrapper(pState)
@@ -4695,33 +4943,6 @@ updateDisplayMode();
             
             if currentVal < newMin, set(slider, 'Value', newMin);
             elseif currentVal > newMax, set(slider, 'Value', newMax); end
-        end
-
-        function updateContrast_local(sourceSlider)
-            if nargin < 1, sourceSlider = ''; end
-            minVal = get(hMinSlider, 'Value'); 
-            maxVal = get(hMaxSlider, 'Value');
-            
-            if minVal >= maxVal
-                if strcmp(sourceSlider, 'min')
-                    minVal = maxVal - 1e-9;
-                    set(hMinSlider, 'Value', minVal);
-                elseif strcmp(sourceSlider, 'max')
-                    maxVal = minVal + 1e-9;
-                    set(hMaxSlider, 'Value', maxVal);
-                end
-            end
-            
-            set(hAxes, 'CLim', [minVal, maxVal]);
-            
-            % If this was a manual change, store it as a custom limit
-            panelUD = get(hCtrlPanel, 'UserData');
-            if isfield(panelUD, 'displayHandles')
-                modeOptions = get(panelUD.displayHandles.modeDropdown, 'String');
-                currentMode = modeOptions{get(panelUD.displayHandles.modeDropdown, 'Value')};
-                panelUD.customModeContrasts.(currentMode) = [minVal, maxVal];
-                set(hCtrlPanel, 'UserData', panelUD);
-            end
         end
     end
 
