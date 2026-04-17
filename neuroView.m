@@ -550,12 +550,12 @@ updateDisplayMode();
             if isempty(playerStateToApply)
                 contrastHandles.resetSliders(selectedMode);
             end
-            if ~isMergeAvg && isfield(contrastHandles, 'minSlider')
-                applySessionStickyClimToHandles('avg', contrastHandles.panel, contrastHandles.minSlider, contrastHandles.maxSlider, hAxes);
-            end
             if isTiffMode, set(hAxes, 'YDir', 'normal'); end
             if ~isempty(vareaHandles), vareaHandles.updateAll(); end
             contrastHandles.reapplyColormap();
+            if ~isMergeAvg && isfield(contrastHandles, 'minSlider')
+                applySessionStickyClimToHandles('avg', contrastHandles.panel, contrastHandles.minSlider, contrastHandles.maxSlider, hAxes);
+            end
             syncAxisLimitEditors_avg();
             refreshUndocked_avg();
         end
@@ -4785,12 +4785,16 @@ updateDisplayMode();
                 set(panelUD.climMaxEdit, 'String', sprintf('%.6g', maxVal));
             end
         end
-        % Session sticky CLim (movie vs avg independent)
+        % Session sticky CLim: only sync from sliders on user-driven changes. During
+        % resetSliders / applySticky we set suppressStickyAppStateSync so opening a new
+        % movie does not overwrite persisted [cmin cmax] before applySessionSticky runs.
         if isfield(panelUD, 'stickyKey') && ~isempty(panelUD.stickyKey)
             sk = panelUD.stickyKey;
             if isfield(appState.contrastSticky, sk) && appState.contrastSticky.(sk).enabled
-                appState.contrastSticky.(sk).cmin = minVal;
-                appState.contrastSticky.(sk).cmax = maxVal;
+                if ~isfield(panelUD, 'suppressStickyAppStateSync') || ~panelUD.suppressStickyAppStateSync
+                    appState.contrastSticky.(sk).cmin = minVal;
+                    appState.contrastSticky.(sk).cmax = maxVal;
+                end
             end
         end
         set(hCtrlPanel, 'UserData', panelUD);
@@ -4857,7 +4861,9 @@ updateDisplayMode();
             set(hMaxSlider, 'Value', max(get(hMaxSlider, 'Min'), min(get(hMaxSlider, 'Max'), cmax)));
             updateContrast_local('', hCtrlPanel, hMinSlider, hMaxSlider, hAxes);
             panelUD = get(hCtrlPanel, 'UserData');
-            panelUD.suspendClimSync = false; set(hCtrlPanel, 'UserData', panelUD);
+            panelUD.suspendClimSync = false;
+            panelUD.suppressStickyAppStateSync = false;
+            set(hCtrlPanel, 'UserData', panelUD);
         else
             % Refresh edit strings from current sliders
             if isfield(panelUD, 'climMinEdit') && isgraphics(panelUD.climMinEdit)
@@ -4876,6 +4882,7 @@ updateDisplayMode();
         panelUserData.modeContrasts = modeContrasts;
         panelUserData.customModeContrasts = struct(); % To store user-set limits
         panelUserData.suspendClimSync = false;
+        panelUserData.suppressStickyAppStateSync = false;
         if nargin > 4, panelUserData.displayHandles = displayHandles; end % Store display handles
         panelUserData.stickyKey = stickyContext;
         set(hCtrlPanel, 'UserData', panelUserData);
@@ -4932,7 +4939,13 @@ updateDisplayMode();
         function repositionClimEditsNearColorbar()
             if ~isgraphics(hClimMinEdit) || ~isgraphics(hAxes), return; end
             try
-                cb = colorbar(hAxes);
+                cb = [];
+                if isprop(hAxes, 'Colorbar')
+                    cb = hAxes.Colorbar;
+                end
+                if isempty(cb) || ~isgraphics(cb)
+                    cb = colorbar(hAxes);
+                end
                 set(cb, 'Units', 'normalized');
                 cbPos = get(cb, 'Position');
             catch
@@ -4987,7 +5000,9 @@ updateDisplayMode();
             % anchor for the range multipliers.
 
             panelUD = get(hCtrlPanel, 'UserData');
-            
+            panelUD.suppressStickyAppStateSync = true;
+            set(hCtrlPanel, 'UserData', panelUD);
+            try
             % Determine the default (percentile) and current (custom or default) limits
             defaultLims = [0 1];
             if isfield(panelUD.modeContrasts, modeName), defaultLims = panelUD.modeContrasts.(modeName); end
@@ -5011,6 +5026,15 @@ updateDisplayMode();
             
             % Apply the final CLim to the axes
             updateContrast_local('', hCtrlPanel, hMinSlider, hMaxSlider, hAxes);
+            catch ME
+                panelUD = get(hCtrlPanel, 'UserData');
+                panelUD.suppressStickyAppStateSync = false;
+                set(hCtrlPanel, 'UserData', panelUD);
+                rethrow(ME);
+            end
+            panelUD = get(hCtrlPanel, 'UserData');
+            panelUD.suppressStickyAppStateSync = false;
+            set(hCtrlPanel, 'UserData', panelUD);
         end
         
         function setPlayerStateWrapper(pState)
@@ -5099,8 +5123,6 @@ updateDisplayMode();
             if currentVal < newMin, set(slider, 'Value', newMin);
             elseif currentVal > newMax, set(slider, 'Value', newMax); end
         end
-
-        set(hParent, 'SizeChangedFcn', @(s,e) repositionClimEditsNearColorbar());
     end
 
     function handles = createMergeContrastControls(hParent, hAxes, panelPosition, avgDataRGB, displayHandles)
