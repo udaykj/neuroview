@@ -57,6 +57,9 @@ appState.sessionUiCache = struct('TIFF', [], 'Neural', []); % Explicit session U
 appState.sessionMode = 'TIFF'; % Remembers the mode of the current session when viewing a loaded state
 % Export settings (session-scoped)
 appState.exportGamma = struct('mp4', 1.0, 'avi', 1.0); % 1.0 = no correction (avoids export flicker)
+% Session-only sticky contrast (no file save): separate for movie player vs average-image windows
+appState.contrastSticky = struct('movie', struct('enabled', false, 'cmin', [], 'cmax', []), ...
+                                 'avg', struct('enabled', false, 'cmin', [], 'cmax', []));
 
 % --- GUI Setup ---
 hFig = figure('Name', 'NeuroView - Unified Viewer', ...
@@ -413,7 +416,7 @@ updateDisplayMode();
             if isMergeAvg
                 contrastHandles = createMergeContrastControls(hPlotFig, hAxes, [0.1 0.01 0.8 0.09], localState.avgData, displayHandles);
             else
-                contrastHandles = createContrastControls(hPlotFig, hAxes, [0.1 0.01 0.8 0.09], modeContrasts, displayHandles);
+                contrastHandles = createContrastControls(hPlotFig, hAxes, [0.1 0.01 0.8 0.095], modeContrasts, displayHandles, 'avg');
             end
             hPlaneFalseColorCheckbox_avg = [];
             planeContrastPopupFig_avg = [];
@@ -430,7 +433,7 @@ updateDisplayMode();
                     planeContrastLimits_avg(p,:) = pr(:)';
                 end
                 hPlaneFalseColorCheckbox_avg = uicontrol('Parent', contrastHandles.panel, 'Style', 'checkbox', 'String', 'Multicolor', ...
-                    'Value', 0, 'Units', 'normalized', 'Position', [0.80 0.10 0.19 0.30], 'Callback', @(s,e) planeFalseColorToggled_avg(), 'BackgroundColor', get(contrastHandles.panel, 'BackgroundColor'));
+                    'Value', 0, 'Units', 'normalized', 'Position', [0.58 0.06 0.20 0.26], 'Callback', @(s,e) planeFalseColorToggled_avg(), 'BackgroundColor', get(contrastHandles.panel, 'BackgroundColor'));
             end
             hPlotObject = []; 
             
@@ -546,6 +549,9 @@ updateDisplayMode();
             setupPlotAxes(hAxes, localState.mode, localState.TIFF, localState.Neural);
             if isempty(playerStateToApply)
                 contrastHandles.resetSliders(selectedMode);
+            end
+            if ~isMergeAvg && isfield(contrastHandles, 'minSlider')
+                applySessionStickyClimToHandles('avg', contrastHandles.panel, contrastHandles.minSlider, contrastHandles.maxSlider, hAxes);
             end
             if isTiffMode, set(hAxes, 'YDir', 'normal'); end
             if ~isempty(vareaHandles), vareaHandles.updateAll(); end
@@ -1572,9 +1578,9 @@ updateDisplayMode();
                 end
             end
 
-            contrastHandles = createContrastControls(hMovieFig, hAxes, [0.1 0.01 0.8 0.09], modeContrasts, displayHandles);
+            contrastHandles = createContrastControls(hMovieFig, hAxes, [0.1 0.01 0.8 0.095], modeContrasts, displayHandles, 'movie');
             hPlaneFalseColorCheckbox = uicontrol('Parent', contrastHandles.panel, 'Style', 'checkbox', 'String', 'Multicolor', ...
-                'Value', 0, 'Units', 'normalized', 'Position', [0.80 0.10 0.19 0.30], 'Visible', ifelse(isMultiPlaneMovie, 'on', 'off'), ...
+                'Value', 0, 'Units', 'normalized', 'Position', [0.58 0.06 0.20 0.26], 'Visible', ifelse(isMultiPlaneMovie, 'on', 'off'), ...
                 'Callback', @(s,e) planeFalseColorToggled(), 'BackgroundColor', get(contrastHandles.panel, 'BackgroundColor'));
             markerHandles = createMarkerControls(hMovieFig, [0.1 0.10 0.8 0.05]);
             
@@ -1779,6 +1785,7 @@ updateDisplayMode();
             set(hAxes, 'YDir', 'normal');
             
             contrastHandles.resetSliders(selectedMode);
+            applySessionStickyClimToHandles('movie', contrastHandles.panel, contrastHandles.minSlider, contrastHandles.maxSlider, hAxes);
             
             if ~isempty(vareaHandles), vareaHandles.updateAll(); end
             contrastHandles.reapplyColormap();
@@ -2168,17 +2175,15 @@ updateDisplayMode();
                 set(hText, 'String', 'Saving video...'); drawnow;
                 try
                     % Combined export settings dialog
-                    resOptions = {'Native','1080p','1440p','2160p'};
-                    resStr = strjoin(resOptions, '|');
                     kDefaultStart = round(get(hSeekSlider,'Value')); if kDefaultStart < 1, kDefaultStart = 1; end
                     kDefaultEnd = numMovieFrames;
-                    defaults = {resOptions{2}, num2str(kDefaultStart), num2str(kDefaultEnd), num2str(appState.exportGamma.mp4), num2str(appState.exportGamma.avi)};
-                    prompt = {'Resolution (choose: Native|1080p|1440p|2160p):','Start frame (1-based):','End frame:','MP4 gamma:','AVI gamma:'};
+                    defaults = {'Native', num2str(kDefaultStart), num2str(kDefaultEnd), num2str(appState.exportGamma.mp4), num2str(appState.exportGamma.avi)};
+                    prompt = {'Resolution (Native, 1080p, Yp=square, or WxH e.g. 1920x1080):','Start frame (1-based):','End frame:','MP4 gamma:','AVI gamma:'};
                     answ = inputdlg(prompt, 'Export settings', [1 50; 1 20; 1 20; 1 20; 1 20], defaults);
                     if isempty(answ), if wasPlaying, start(movieTimer); end, return; end
-                    % Parse resolution
-                    resChoice = answ{1};
-                    if ~any(strcmp(resOptions, resChoice)), resChoice = '1080p'; end
+                    % Parse resolution (arbitrary: Native, presets, Yp, WxH)
+                    resChoice = strtrim(answ{1});
+                    if isempty(resChoice), resChoice = 'Native'; end
                     % Parse frames
                     kStart = round(str2double(answ{2})); kEnd = round(str2double(answ{3}));
                     if isnan(kStart), kStart = kDefaultStart; end
@@ -2236,23 +2241,8 @@ updateDisplayMode();
                         nativeW = c2 - c1 + 1; nativeH = r2 - r1 + 1;
                     end
 
-                    % Compute target size inline (avoid nested function nesting rules)
-                    switch resChoice
-                        case 'Native'
-                            if ~isempty(nativeW) && ~isempty(nativeH)
-                                targetW = nativeW; targetH = nativeH;
-                            else
-                                targetH = 1080; targetW = max(1, round(targetH * aspect));
-                            end
-                        case '1080p'
-                            targetH = 1080; targetW = max(1, round(targetH * aspect));
-                        case '1440p'
-                            targetH = 1440; targetW = max(1, round(targetH * aspect));
-                        case '2160p'
-                            targetH = 2160; targetW = max(1, round(targetH * aspect));
-                        otherwise
-                            targetH = 1080; targetW = max(1, round(targetH * aspect));
-                    end
+                    % Compute target size (parseMovieExportResolutionString)
+                    [targetW, targetH] = parseMovieExportResolutionString(resChoice, aspect, nativeW, nativeH);
                     if targetW < 1, targetW = 1; end
                     if targetH < 1, targetH = 1; end
                     % Ensure even dimensions only for MP4 encoder
@@ -4787,30 +4777,141 @@ updateDisplayMode();
             modeOptions = get(panelUD.displayHandles.modeDropdown, 'String');
             currentMode = modeOptions{get(panelUD.displayHandles.modeDropdown, 'Value')};
             panelUD.customModeContrasts.(currentMode) = [minVal, maxVal];
-            set(hCtrlPanel, 'UserData', panelUD);
+        end
+        % Sync CLim edit boxes (avoid loop when applying from edit / sticky)
+        if isfield(panelUD, 'climMinEdit') && isgraphics(panelUD.climMinEdit)
+            if ~isfield(panelUD, 'suspendClimSync') || ~panelUD.suspendClimSync
+                set(panelUD.climMinEdit, 'String', sprintf('%.6g', minVal));
+                set(panelUD.climMaxEdit, 'String', sprintf('%.6g', maxVal));
+            end
+        end
+        % Session sticky CLim (movie vs avg independent)
+        if isfield(panelUD, 'stickyKey') && ~isempty(panelUD.stickyKey)
+            sk = panelUD.stickyKey;
+            if isfield(appState.contrastSticky, sk) && appState.contrastSticky.(sk).enabled
+                appState.contrastSticky.(sk).cmin = minVal;
+                appState.contrastSticky.(sk).cmax = maxVal;
+            end
+        end
+        set(hCtrlPanel, 'UserData', panelUD);
+    end
+
+    function [targetW, targetH] = parseMovieExportResolutionString(resStr, aspect, nativeW, nativeH)
+        % Parse export resolution: Native | 1080p/1440p/2160p | Yp (square) | YxZ or Y x Z | plain number = square
+        targetW = []; targetH = [];
+        if ~isfinite(aspect) || aspect <= 0, aspect = 1; end
+        s = strtrim(char(resStr));
+        if isempty(s)
+            targetH = 1080; targetW = max(1, round(targetH * aspect)); return
+        end
+        if strcmpi(s, 'native')
+            if ~isempty(nativeW) && ~isempty(nativeH) && nativeW >= 1 && nativeH >= 1
+                targetW = nativeW; targetH = nativeH;
+            else
+                targetH = 1080; targetW = max(1, round(targetH * aspect));
+            end
+            return
+        end
+        tokp = regexp(s, '^(\d+)\s*[pP]\s*$', 'tokens', 'once');
+        if ~isempty(tokp)
+            Y = round(str2double(tokp{1}));
+            if Y >= 1, targetW = Y; targetH = Y; end
+            return
+        end
+        tokxz = regexp(s, '^(\d+)\s*[xX\*]\s*(\d+)\s*$', 'tokens', 'once');
+        if ~isempty(tokxz)
+            targetW = max(1, round(str2double(tokxz{1})));
+            targetH = max(1, round(str2double(tokxz{2})));
+            return
+        end
+        switch lower(s)
+            case '1080p', targetH = 1080; targetW = max(1, round(targetH * aspect));
+            case '1440p', targetH = 1440; targetW = max(1, round(targetH * aspect));
+            case '2160p', targetH = 2160; targetW = max(1, round(targetH * aspect));
+            otherwise
+                if all(isstrprop(s, 'digit'))
+                    Y = round(str2double(s));
+                    if Y >= 1, targetW = Y; targetH = Y; end
+                end
+        end
+        if isempty(targetW) || isempty(targetH)
+            targetH = 1080; targetW = max(1, round(targetH * aspect));
         end
     end
 
-    function handles = createContrastControls(hParent, hAxes, panelPosition, modeContrasts, displayHandles)
+    function applySessionStickyClimToHandles(stickyKey, hCtrlPanel, hMinSlider, hMaxSlider, hAxes)
+        if nargin < 2 || isempty(stickyKey) || ~isgraphics(hCtrlPanel), return; end
+        if ~isfield(appState.contrastSticky, stickyKey), return; end
+        St = appState.contrastSticky.(stickyKey);
+        panelUD = get(hCtrlPanel, 'UserData');
+        if St.enabled && ~isempty(St.cmin) && ~isempty(St.cmax) && St.cmin < St.cmax
+            cmin = St.cmin; cmax = St.cmax;
+            panelUD.suspendClimSync = true; set(hCtrlPanel, 'UserData', panelUD);
+            padLo = max(1e-12, abs(cmin) * 1e-12 + 1e-12);
+            padHi = max(1e-12, abs(cmax) * 1e-12 + 1e-12);
+            if cmin < get(hMinSlider, 'Min'), set(hMinSlider, 'Min', cmin - padLo); end
+            if cmin > get(hMinSlider, 'Max'), set(hMinSlider, 'Max', cmin + padLo); end
+            if cmax < get(hMaxSlider, 'Min'), set(hMaxSlider, 'Min', cmax - padHi); end
+            if cmax > get(hMaxSlider, 'Max'), set(hMaxSlider, 'Max', cmax + padHi); end
+            set(hMinSlider, 'Value', max(get(hMinSlider, 'Min'), min(get(hMinSlider, 'Max'), cmin)));
+            set(hMaxSlider, 'Value', max(get(hMaxSlider, 'Min'), min(get(hMaxSlider, 'Max'), cmax)));
+            updateContrast_local('', hCtrlPanel, hMinSlider, hMaxSlider, hAxes);
+            panelUD = get(hCtrlPanel, 'UserData');
+            panelUD.suspendClimSync = false; set(hCtrlPanel, 'UserData', panelUD);
+        else
+            % Refresh edit strings from current sliders
+            if isfield(panelUD, 'climMinEdit') && isgraphics(panelUD.climMinEdit)
+                panelUD.suspendClimSync = true; set(hCtrlPanel, 'UserData', panelUD);
+                set(panelUD.climMinEdit, 'String', sprintf('%.6g', get(hMinSlider, 'Value')));
+                set(panelUD.climMaxEdit, 'String', sprintf('%.6g', get(hMaxSlider, 'Value')));
+                panelUD.suspendClimSync = false; set(hCtrlPanel, 'UserData', panelUD);
+            end
+        end
+    end
+
+    function handles = createContrastControls(hParent, hAxes, panelPosition, modeContrasts, displayHandles, stickyContext)
+        if nargin < 6, stickyContext = ''; end
         hCtrlPanel = uipanel('Parent', hParent, 'Title', 'Contrast & Colormap', 'Units', 'normalized', 'Position', panelPosition);
         panelUserData.lastAppliedCmapName = 'gray';
         panelUserData.modeContrasts = modeContrasts;
         panelUserData.customModeContrasts = struct(); % To store user-set limits
+        panelUserData.suspendClimSync = false;
         if nargin > 4, panelUserData.displayHandles = displayHandles; end % Store display handles
+        panelUserData.stickyKey = stickyContext;
         set(hCtrlPanel, 'UserData', panelUserData);
         
         rangeOptions = {'0.5x', '1x', '2x', '4x', '8x'};
-        uicontrol(hCtrlPanel,'Style','text','String','Black:','Units','normalized','Position',[0.02 0.5 0.08 0.4]);
-        hMinSlider = uicontrol(hCtrlPanel,'Style','slider','Units','normalized','Position',[0.10 0.55 0.25 0.3]);
-        hMinRangeDropdown = uicontrol(hCtrlPanel,'Style','popupmenu','String',rangeOptions,'Value',2,'Units','normalized','Position',[0.36 0.55 0.1 0.3]);
-        uicontrol(hCtrlPanel,'Style','text','String','White:','Units','normalized','Position',[0.52 0.5 0.08 0.4]);
-        hMaxSlider = uicontrol(hCtrlPanel,'Style','slider','Units','normalized','Position',[0.60 0.55 0.25 0.3]);
-        hMaxRangeDropdown = uicontrol(hCtrlPanel,'Style','popupmenu','String',rangeOptions,'Value',2,'Units','normalized','Position',[0.86 0.55 0.1 0.3]);
-        uicontrol(hCtrlPanel,'Style','text','String','Colormap:','Units','normalized','Position',[0.02 0.05 0.18 0.3]);
+        uicontrol(hCtrlPanel,'Style','text','String','Black:','Units','normalized','Position',[0.02 0.52 0.08 0.38]);
+        hMinSlider = uicontrol(hCtrlPanel,'Style','slider','Units','normalized','Position',[0.10 0.58 0.22 0.28]);
+        hMinRangeDropdown = uicontrol(hCtrlPanel,'Style','popupmenu','String',rangeOptions,'Value',2,'Units','normalized','Position',[0.33 0.58 0.09 0.28]);
+        uicontrol(hCtrlPanel,'Style','text','String','White:','Units','normalized','Position',[0.43 0.52 0.08 0.38]);
+        hMaxSlider = uicontrol(hCtrlPanel,'Style','slider','Units','normalized','Position',[0.51 0.58 0.22 0.28]);
+        hMaxRangeDropdown = uicontrol(hCtrlPanel,'Style','popupmenu','String',rangeOptions,'Value',2,'Units','normalized','Position',[0.74 0.58 0.09 0.28]);
+        uicontrol(hCtrlPanel,'Style','text','String','Colormap:','Units','normalized','Position',[0.02 0.06 0.16 0.28]);
         cmapStrings = {'gray','hot','parula','jet','cool','winter','summer','spring','autumn','Other...'};
-        hColormapDropdown = uicontrol(hCtrlPanel,'Style','popupmenu','String',cmapStrings,'Value',1,'Units','normalized','Position',[0.20 0.1 0.28 0.3]);
-        hInvertCmapCheckbox = uicontrol(hCtrlPanel,'Style','checkbox','String','Invert','Units','normalized','Position',[0.50 0.1 0.14 0.3]);
-        
+        hColormapDropdown = uicontrol(hCtrlPanel,'Style','popupmenu','String',cmapStrings,'Value',1,'Units','normalized','Position',[0.18 0.10 0.24 0.28]);
+        hInvertCmapCheckbox = uicontrol(hCtrlPanel,'Style','checkbox','String','Invert','Units','normalized','Position',[0.44 0.10 0.12 0.28]);
+        hStickyClimCheckbox = [];
+        if ~isempty(stickyContext)
+            hStickyClimCheckbox = uicontrol(hCtrlPanel,'Style','checkbox','String','Stick CLim', ...
+                'Units','normalized','Position',[0.84 0.62 0.15 0.28],'FontSize',8, ...
+                'Value', double(appState.contrastSticky.(stickyContext).enabled), ...
+                'Callback', @(s,e) stickyClimToggled(), ...
+                'TooltipString', 'Session: reuse these CLim limits when opening other movies/images');
+        end
+        % Direct CLim edits (repositioned beside colorbar when colormap is applied)
+        hClimMaxEdit = uicontrol(hParent,'Style','edit','Units','normalized','Position',[0.01 0.5 0.04 0.04], ...
+            'FontSize',8,'HorizontalAlignment','center','TooltipString','CLim max (white)');
+        hClimMinEdit = uicontrol(hParent,'Style','edit','Units','normalized','Position',[0.01 0.45 0.04 0.04], ...
+            'FontSize',8,'HorizontalAlignment','center','TooltipString','CLim min (black)');
+        set(hClimMinEdit, 'Callback', @(s,e) applyClimFromEdits());
+        set(hClimMaxEdit, 'Callback', @(s,e) applyClimFromEdits());
+
+        panelUD = get(hCtrlPanel, 'UserData');
+        panelUD.climMinEdit = hClimMinEdit;
+        panelUD.climMaxEdit = hClimMaxEdit;
+        set(hCtrlPanel, 'UserData', panelUD);
+
         set(hMinRangeDropdown, 'Callback', @(s,e) updateSliderRange(s, hMinSlider));
         set(hMaxRangeDropdown, 'Callback', @(s,e) updateSliderRange(s, hMaxSlider));
         addlistener(hMinSlider, 'Value', 'PostSet', @(s,e) updateContrast_local('min', hCtrlPanel, hMinSlider, hMaxSlider, hAxes));
@@ -4821,9 +4922,62 @@ updateDisplayMode();
         handles.panel=hCtrlPanel; handles.minSlider=hMinSlider; handles.maxSlider=hMaxSlider;
         handles.minRange=hMinRangeDropdown; handles.maxRange=hMaxRangeDropdown;
         handles.cmapDropdown=hColormapDropdown; handles.invertCmap=hInvertCmapCheckbox;
+        handles.climMinEdit=hClimMinEdit; handles.climMaxEdit=hClimMaxEdit;
+        if ~isempty(hStickyClimCheckbox), handles.stickyClimCheckbox=hStickyClimCheckbox; end
         handles.setPlayerState=@setPlayerStateWrapper;
         handles.reapplyColormap=@applyColormapWrapper;
         handles.resetSliders=@resetSlidersForMode;
+        handles.repositionClimEdits=@repositionClimEditsNearColorbar;
+
+        function repositionClimEditsNearColorbar()
+            if ~isgraphics(hClimMinEdit) || ~isgraphics(hAxes), return; end
+            try
+                cb = colorbar(hAxes);
+                set(cb, 'Units', 'normalized');
+                cbPos = get(cb, 'Position');
+            catch
+                return;
+            end
+            edW = min(0.072, max(0.04, cbPos(3) * 0.85));
+            edH = min(0.034, max(0.018, cbPos(4) * 0.2));
+            gap = 0.0035;
+            left = min(0.96 - edW, cbPos(1) + cbPos(3) + gap);
+            % Max (white) at top of colorbar, min (black) at bottom
+            set(hClimMaxEdit, 'Units', 'normalized', 'Position', [left, cbPos(2) + cbPos(4) - edH, edW, edH], 'Visible', 'on');
+            set(hClimMinEdit, 'Units', 'normalized', 'Position', [left, cbPos(2), edW, edH], 'Visible', 'on');
+        end
+
+        function applyClimFromEdits()
+            c1 = str2double(get(hClimMinEdit, 'String'));
+            c2 = str2double(get(hClimMaxEdit, 'String'));
+            if any(isnan([c1, c2])) || c2 <= c1
+                panelUD = get(hCtrlPanel, 'UserData');
+                panelUD.suspendClimSync = true; set(hCtrlPanel, 'UserData', panelUD);
+                set(hClimMinEdit, 'String', sprintf('%.6g', get(hMinSlider, 'Value')));
+                set(hClimMaxEdit, 'String', sprintf('%.6g', get(hMaxSlider, 'Value')));
+                panelUD.suspendClimSync = false; set(hCtrlPanel, 'UserData', panelUD);
+                return
+            end
+            padLo = max(1e-12, abs(c1) * 1e-12 + 1e-12);
+            padHi = max(1e-12, abs(c2) * 1e-12 + 1e-12);
+            if c1 < get(hMinSlider, 'Min'), set(hMinSlider, 'Min', c1 - padLo); end
+            if c1 > get(hMinSlider, 'Max'), set(hMinSlider, 'Max', c1 + padLo); end
+            if c2 < get(hMaxSlider, 'Min'), set(hMaxSlider, 'Min', c2 - padHi); end
+            if c2 > get(hMaxSlider, 'Max'), set(hMaxSlider, 'Max', c2 + padHi); end
+            set(hMinSlider, 'Value', max(get(hMinSlider, 'Min'), min(get(hMinSlider, 'Max'), c1)));
+            set(hMaxSlider, 'Value', max(get(hMaxSlider, 'Min'), min(get(hMaxSlider, 'Max'), c2)));
+            updateContrast_local('', hCtrlPanel, hMinSlider, hMaxSlider, hAxes);
+        end
+
+        function stickyClimToggled()
+            if isempty(stickyContext) || isempty(hStickyClimCheckbox), return; end
+            en = get(hStickyClimCheckbox, 'Value');
+            appState.contrastSticky.(stickyContext).enabled = logical(en);
+            if en
+                appState.contrastSticky.(stickyContext).cmin = get(hMinSlider, 'Value');
+                appState.contrastSticky.(stickyContext).cmax = get(hMaxSlider, 'Value');
+            end
+        end
 
         function resetSlidersForMode(modeName)
             % This is the master function to set slider ranges and values.
@@ -4921,6 +5075,7 @@ updateDisplayMode();
                 colorbar(hAxes);
             end
             set(hPanel, 'UserData', panelUserData);
+            repositionClimEditsNearColorbar();
         end
 
         function updateSliderRange(dropdown, slider)
@@ -4944,6 +5099,8 @@ updateDisplayMode();
             if currentVal < newMin, set(slider, 'Value', newMin);
             elseif currentVal > newMax, set(slider, 'Value', newMax); end
         end
+
+        set(hParent, 'SizeChangedFcn', @(s,e) repositionClimEditsNearColorbar());
     end
 
     function handles = createMergeContrastControls(hParent, hAxes, panelPosition, avgDataRGB, displayHandles)
