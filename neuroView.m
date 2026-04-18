@@ -4781,8 +4781,8 @@ updateDisplayMode();
         % Sync CLim edit boxes (avoid loop when applying from edit / sticky)
         if isfield(panelUD, 'climMinEdit') && isgraphics(panelUD.climMinEdit)
             if ~isfield(panelUD, 'suspendClimSync') || ~panelUD.suspendClimSync
-                set(panelUD.climMinEdit, 'String', sprintf('%.6g', minVal));
-                set(panelUD.climMaxEdit, 'String', sprintf('%.6g', maxVal));
+                set(panelUD.climMinEdit, 'String', formatClimForEditBox(minVal));
+                set(panelUD.climMaxEdit, 'String', formatClimForEditBox(maxVal));
             end
         end
         % Session sticky CLim: only sync from sliders on user-driven changes. During
@@ -4798,6 +4798,25 @@ updateDisplayMode();
             end
         end
         set(hCtrlPanel, 'UserData', panelUD);
+    end
+
+    function s = formatClimForEditBox(v)
+        % Match colorbar-style ticks: integer when value is whole at 0.1 resolution, else one decimal
+        if ~isfinite(v), s = ''; return; end
+        x = double(v);
+        r = round(x * 10) / 10;
+        if abs(r - round(r)) < 1e-6
+            s = sprintf('%g', round(r));
+        else
+            s = sprintf('%.1f', r);
+        end
+    end
+
+    function syncClimEditStringsFromSliders(hCtrlPanel, hMinSlider, hMaxSlider)
+        panelUD = get(hCtrlPanel, 'UserData');
+        if ~isfield(panelUD, 'climMinEdit') || ~isgraphics(panelUD.climMinEdit), return; end
+        set(panelUD.climMinEdit, 'String', formatClimForEditBox(get(hMinSlider, 'Value')));
+        set(panelUD.climMaxEdit, 'String', formatClimForEditBox(get(hMaxSlider, 'Value')));
     end
 
     function [targetW, targetH] = parseMovieExportResolutionString(resStr, aspect, nativeW, nativeH)
@@ -4864,14 +4883,9 @@ updateDisplayMode();
             panelUD.suspendClimSync = false;
             panelUD.suppressStickyAppStateSync = false;
             set(hCtrlPanel, 'UserData', panelUD);
+            syncClimEditStringsFromSliders(hCtrlPanel, hMinSlider, hMaxSlider);
         else
-            % Refresh edit strings from current sliders
-            if isfield(panelUD, 'climMinEdit') && isgraphics(panelUD.climMinEdit)
-                panelUD.suspendClimSync = true; set(hCtrlPanel, 'UserData', panelUD);
-                set(panelUD.climMinEdit, 'String', sprintf('%.6g', get(hMinSlider, 'Value')));
-                set(panelUD.climMaxEdit, 'String', sprintf('%.6g', get(hMaxSlider, 'Value')));
-                panelUD.suspendClimSync = false; set(hCtrlPanel, 'UserData', panelUD);
-            end
+            syncClimEditStringsFromSliders(hCtrlPanel, hMinSlider, hMaxSlider);
         end
     end
 
@@ -4906,11 +4920,24 @@ updateDisplayMode();
                 'Callback', @(s,e) stickyClimToggled(), ...
                 'TooltipString', 'Session: reuse these CLim limits when opening other movies/images');
         end
-        % Direct CLim edits (repositioned beside colorbar when colormap is applied)
+        % Direct CLim edits: match figure gray + colorbar font (reposition syncs FontSize/Name from colorbar)
+        bgFig = get(hParent, 'Color');
+        if isempty(bgFig) || numel(bgFig) < 3, bgFig = [0.94 0.94 0.94]; end
+        if mean(bgFig(:)) < 0.45, fgEdit = [0.92 0.92 0.92]; else, fgEdit = [0.15 0.15 0.15]; end
+        defFs = get(0, 'DefaultAxesFontSize'); if isempty(defFs) || ~isfinite(defFs), defFs = 10; end
+        defFn = get(0, 'DefaultAxesFontName');
+        if isempty(defFn), defFn = get(0, 'DefaultUicontrolFontName'); end
         hClimMaxEdit = uicontrol(hParent,'Style','edit','Units','normalized','Position',[0.01 0.5 0.04 0.04], ...
-            'FontSize',8,'HorizontalAlignment','center','TooltipString','CLim max (white)');
+            'BackgroundColor', bgFig, 'ForegroundColor', fgEdit, 'FontSize', defFs, 'FontName', defFn, ...
+            'HorizontalAlignment', 'right', 'TooltipString', 'CLim max (white)');
         hClimMinEdit = uicontrol(hParent,'Style','edit','Units','normalized','Position',[0.01 0.45 0.04 0.04], ...
-            'FontSize',8,'HorizontalAlignment','center','TooltipString','CLim min (black)');
+            'BackgroundColor', bgFig, 'ForegroundColor', fgEdit, 'FontSize', defFs, 'FontName', defFn, ...
+            'HorizontalAlignment', 'right', 'TooltipString', 'CLim min (black)');
+        try
+            set(hClimMaxEdit, 'HighlightColor', bgFig, 'ShadowColor', bgFig);
+            set(hClimMinEdit, 'HighlightColor', bgFig, 'ShadowColor', bgFig);
+        catch
+        end
         set(hClimMinEdit, 'Callback', @(s,e) applyClimFromEdits());
         set(hClimMaxEdit, 'Callback', @(s,e) applyClimFromEdits());
 
@@ -4951,13 +4978,30 @@ updateDisplayMode();
             catch
                 return;
             end
+            bgFig = get(hParent, 'Color');
+            if isempty(bgFig) || numel(bgFig) < 3, bgFig = [0.94 0.94 0.94]; end
+            if mean(bgFig(:)) < 0.45, fgEdit = [0.92 0.92 0.92]; else, fgEdit = [0.15 0.15 0.15]; end
+            fs = []; fn = '';
+            try, if isprop(cb, 'FontSize'), fs = get(cb, 'FontSize'); end; catch, end
+            try, if isprop(cb, 'FontName'), fn = get(cb, 'FontName'); end; catch, end
+            if isempty(fs) || ~isfinite(fs), fs = get(0, 'DefaultAxesFontSize'); end
+            if isempty(fs) || ~isfinite(fs), fs = 10; end
+            if isempty(fn), fn = get(0, 'DefaultAxesFontName'); end
+            if isempty(fn), fn = get(0, 'DefaultUicontrolFontName'); end
+            % To the right of the colorbar (does not cover intermediate tick labels)
             edW = min(0.072, max(0.04, cbPos(3) * 0.85));
             edH = min(0.034, max(0.018, cbPos(4) * 0.2));
             gap = 0.0035;
             left = min(0.96 - edW, cbPos(1) + cbPos(3) + gap);
-            % Max (white) at top of colorbar, min (black) at bottom
-            set(hClimMaxEdit, 'Units', 'normalized', 'Position', [left, cbPos(2) + cbPos(4) - edH, edW, edH], 'Visible', 'on');
-            set(hClimMinEdit, 'Units', 'normalized', 'Position', [left, cbPos(2), edW, edH], 'Visible', 'on');
+            set(hClimMaxEdit, 'Units', 'normalized', 'Position', [left, cbPos(2) + cbPos(4) - edH, edW, edH], ...
+                'Visible', 'on', 'BackgroundColor', bgFig, 'ForegroundColor', fgEdit, 'FontSize', fs, 'FontName', fn);
+            set(hClimMinEdit, 'Units', 'normalized', 'Position', [left, cbPos(2), edW, edH], ...
+                'Visible', 'on', 'BackgroundColor', bgFig, 'ForegroundColor', fgEdit, 'FontSize', fs, 'FontName', fn);
+            try
+                set(hClimMaxEdit, 'HighlightColor', bgFig, 'ShadowColor', bgFig);
+                set(hClimMinEdit, 'HighlightColor', bgFig, 'ShadowColor', bgFig);
+            catch
+            end
         end
 
         function applyClimFromEdits()
@@ -4966,8 +5010,8 @@ updateDisplayMode();
             if any(isnan([c1, c2])) || c2 <= c1
                 panelUD = get(hCtrlPanel, 'UserData');
                 panelUD.suspendClimSync = true; set(hCtrlPanel, 'UserData', panelUD);
-                set(hClimMinEdit, 'String', sprintf('%.6g', get(hMinSlider, 'Value')));
-                set(hClimMaxEdit, 'String', sprintf('%.6g', get(hMaxSlider, 'Value')));
+                set(hClimMinEdit, 'String', formatClimForEditBox(get(hMinSlider, 'Value')));
+                set(hClimMaxEdit, 'String', formatClimForEditBox(get(hMaxSlider, 'Value')));
                 panelUD.suspendClimSync = false; set(hCtrlPanel, 'UserData', panelUD);
                 return
             end
