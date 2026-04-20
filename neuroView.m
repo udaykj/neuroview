@@ -59,7 +59,9 @@ appState.sessionMode = 'TIFF'; % Remembers the mode of the current session when 
 appState.exportGamma = struct('mp4', 1.0, 'avi', 1.0); % 1.0 = no correction (avoids export flicker)
 % Session-only sticky contrast (no file save): separate for movie player vs average-image windows
 appState.contrastSticky = struct('movie', struct('enabled', false, 'cmin', [], 'cmax', []), ...
-                                 'avg', struct('enabled', false, 'cmin', [], 'cmax', []));
+                                 'avg', struct('enabled', false, 'cmin', [], 'cmax', []), ...
+                                 'multicolorMovie', struct('enabled', false, 'limits', [], 'paletteIdx', 1, 'invert', false), ...
+                                 'multicolorAvg', struct('enabled', false, 'limits', [], 'paletteIdx', 1, 'invert', false));
 
 % --- GUI Setup ---
 hFig = figure('Name', 'NeuroView - Unified Viewer', ...
@@ -420,11 +422,13 @@ updateDisplayMode();
             end
             hPlaneFalseColorCheckbox_avg = [];
             planeContrastPopupFig_avg = [];
+            hMcAvgSticky = [];
+            hMcAvgPalette = [];
+            hMcAvgInvert = [];
             planeContrastLimits_avg = [];
             planePalette_avg = [];
             numPlanesAvg = ifelse(isPlaneAllAvg, size(localState.avgData, 3), 1);
             if isPlaneAllAvg
-                planePalette_avg = lines(numPlanesAvg);
                 planeContrastLimits_avg = zeros(numPlanesAvg, 2);
                 for p = 1:numPlanesAvg
                     planeP = localState.avgData(:,:,p);
@@ -432,6 +436,7 @@ updateDisplayMode();
                     if pr(1) >= pr(2), pr = [0 1]; end
                     planeContrastLimits_avg(p,:) = pr(:)';
                 end
+                refreshMulticolorAvgFromSession();
                 hPlaneFalseColorCheckbox_avg = uicontrol('Parent', contrastHandles.panel, 'Style', 'checkbox', 'String', 'Multicolor', ...
                     'Value', 0, 'Units', 'normalized', 'Position', [0.58 0.06 0.20 0.26], 'Callback', @(s,e) planeFalseColorToggled_avg(), 'BackgroundColor', get(contrastHandles.panel, 'BackgroundColor'));
             end
@@ -827,11 +832,37 @@ updateDisplayMode();
             rgb = min(1, max(0, rgb));
         end
 
+        function refreshMulticolorAvgFromSession()
+            % Apply session multicolor palette/invert/per-plane CLim for cross-window comparison.
+            if numPlanesAvg < 1, return; end
+            if ~isfield(appState.contrastSticky, 'multicolorAvg'), return; end
+            A = appState.contrastSticky.multicolorAvg;
+            palIdxA = 1;
+            if isfield(A, 'paletteIdx') && ~isempty(A.paletteIdx)
+                palIdxA = A.paletteIdx;
+            end
+            invA = false;
+            if isfield(A, 'invert')
+                invA = logical(A.invert);
+            end
+            planePalette_avg = applyPlanePaletteOrder(samplePlaneColorPalette(numPlanesAvg, palIdxA), invA);
+            if isfield(A, 'limits') && ~isempty(A.limits)
+                La = A.limits;
+                [nra, ~] = size(La);
+                for pp = 1:min(numPlanesAvg, nra)
+                    if La(pp, 1) < La(pp, 2)
+                        planeContrastLimits_avg(pp, :) = La(pp, :);
+                    end
+                end
+            end
+        end
+
         function planeFalseColorToggled_avg()
             checked = get(hPlaneFalseColorCheckbox_avg, 'Value');
             if checked
                 set(contrastHandles.cmapDropdown, 'Visible', 'off');
                 set(contrastHandles.invertCmap, 'Visible', 'off');
+                refreshMulticolorAvgFromSession();
                 openPlaneContrastPopup_avg();
             else
                 set(contrastHandles.cmapDropdown, 'Visible', 'on');
@@ -844,54 +875,255 @@ updateDisplayMode();
         function openPlaneContrastPopup_avg()
             if isgraphics(planeContrastPopupFig_avg), figure(planeContrastPopupFig_avg); return; end
             P = numPlanesAvg;
-            planeContrastPopupFig_avg = figure('Name', 'Plane contrast (Average)', 'NumberTitle', 'off', 'Position', [700 200 400 min(500, 80+ P*70)]);
+            figW = 640;
+            rowPx = 58;
+            headerPx = 228;
+            figHa = min(820, headerPx + P * rowPx);
+            planeContrastPopupFig_avg = figure('Name', 'Plane contrast (Average)', 'NumberTitle', 'off', ...
+                'Position', [700 200 figW figHa], 'Resize', 'on');
+            uicontrol(planeContrastPopupFig_avg, 'Style', 'text', 'String', 'Average image', 'Units', 'normalized', ...
+                'Position', [0.02 0.915 0.20 0.055], 'FontSize', 10, 'FontWeight', 'bold');
+            stickyAvg = 0;
+            if isfield(appState.contrastSticky, 'multicolorAvg') && isfield(appState.contrastSticky.multicolorAvg, 'enabled')
+                stickyAvg = double(logical(appState.contrastSticky.multicolorAvg.enabled));
+            end
+            hMcAvgSticky = uicontrol(planeContrastPopupFig_avg, 'Style', 'checkbox', 'String', 'Stick plane CLim (session)', ...
+                'Units', 'normalized', 'Position', [0.24 0.908 0.46 0.065], 'Value', stickyAvg, 'FontSize', 10, ...
+                'Callback', @(s,e) multicolorAvgStickyToggled(), ...
+                'TooltipString', ['When checked, per-plane min/max (sliders and typed CLim edits) are saved for this session ', ...
+                'and restored for the next average multicolor view. Independent of main Stick CLim.']);
+            uicontrol(planeContrastPopupFig_avg, 'Style', 'text', 'String', 'Palette:', 'Units', 'normalized', ...
+                'Position', [0.02 0.835 0.10 0.045], 'HorizontalAlignment', 'left', 'FontSize', 10);
+            palStrA = getPlanePaletteMenuStrings();
+            palIdxA0 = 1;
+            if isfield(appState.contrastSticky, 'multicolorAvg') && isfield(appState.contrastSticky.multicolorAvg, 'paletteIdx')
+                palIdxA0 = max(1, min(numel(palStrA), round(appState.contrastSticky.multicolorAvg.paletteIdx)));
+            end
+            hMcAvgPalette = uicontrol(planeContrastPopupFig_avg, 'Style', 'popupmenu', 'String', palStrA, 'Value', palIdxA0, ...
+                'Units', 'normalized', 'Position', [0.12 0.822 0.42 0.078], 'FontSize', 10, 'Callback', @(s,e) multicolorAvgPaletteChanged());
+            invAvg0 = 0;
+            if isfield(appState.contrastSticky, 'multicolorAvg') && isfield(appState.contrastSticky.multicolorAvg, 'invert')
+                invAvg0 = double(logical(appState.contrastSticky.multicolorAvg.invert));
+            end
+            hMcAvgInvert = uicontrol(planeContrastPopupFig_avg, 'Style', 'checkbox', 'String', 'Invert palette order', ...
+                'Units', 'normalized', 'Position', [0.56 0.822 0.42 0.078], 'Value', invAvg0, 'FontSize', 10, ...
+                'Callback', @(s,e) multicolorAvgInvertChanged(), ...
+                'TooltipString', 'Map last colormap color to plane 1, first to top plane (swap plane-color assignment)');
             hMins = zeros(P,1); hMaxs = zeros(P,1); hMinRanges = zeros(P,1); hMaxRanges = zeros(P,1);
+            hEditsMin = zeros(P,1); hEditsMax = zeros(P,1);
+            anchorMinAvg = zeros(P,1);
+            anchorMaxAvg = zeros(P,1);
             rangeOptions = {'0.5x', '1x', '2x', '4x', '8x'};
             rangeVals = [0.5, 1, 2, 4, 8];
+            y0 = 0.695;
+            dyA = min(0.118, 0.665 / max(P, 1));
+            sh = 0.075;
+            ddh = 0.072;
+            bgPopA = get(planeContrastPopupFig_avg, 'Color');
+            if isempty(bgPopA) || numel(bgPopA) < 3, bgPopA = [0.94 0.94 0.94]; end
+            fgEdA = ifelse(mean(bgPopA(:)) < 0.45, [0.92 0.92 0.92], [0.12 0.12 0.22]);
             for p = 1:P
                 idx = p;
-                y = 1 - (p-0.5)/max(P,1);
-                uicontrol(planeContrastPopupFig_avg, 'Style', 'text', 'String', sprintf('Plane %d', p), 'Units', 'normalized', 'Position', [0.02 y-0.03 0.15 0.06]);
+                y = y0 - (p - 1) * dyA;
+                uicontrol(planeContrastPopupFig_avg, 'Style', 'text', 'String', sprintf('Plane %d', p), 'Units', 'normalized', ...
+                    'Position', [0.02 y+0.018 0.09 0.048], 'FontSize', 10);
                 lo = planeContrastLimits_avg(p,1); hi = planeContrastLimits_avg(p,2);
-                hMins(p) = uicontrol(planeContrastPopupFig_avg, 'Style', 'slider', 'Units', 'normalized', 'Position', [0.18 y 0.24 0.04], 'Min', lo-1, 'Max', lo+1, 'Value', lo, 'UserData', lo);
-                hMinRanges(p) = uicontrol(planeContrastPopupFig_avg, 'Style', 'popupmenu', 'String', rangeOptions, 'Value', 2, 'Units', 'normalized', 'Position', [0.43 y 0.08 0.04]);
-                hMaxs(p) = uicontrol(planeContrastPopupFig_avg, 'Style', 'slider', 'Units', 'normalized', 'Position', [0.55 y 0.24 0.04], 'Min', hi-1, 'Max', hi+1, 'Value', hi, 'UserData', hi);
-                hMaxRanges(p) = uicontrol(planeContrastPopupFig_avg, 'Style', 'popupmenu', 'String', rangeOptions, 'Value', 2, 'Units', 'normalized', 'Position', [0.80 y 0.08 0.04]);
-                set(hMinRanges(p), 'Callback', @(s,e) updatePlaneSliderRanges_avg(idx));
-                set(hMaxRanges(p), 'Callback', @(s,e) updatePlaneSliderRanges_avg(idx));
+                anchorMinAvg(p) = lo;
+                anchorMaxAvg(p) = hi;
+                hMins(p) = uicontrol(planeContrastPopupFig_avg, 'Style', 'slider', 'Units', 'normalized', ...
+                    'Position', [0.11 y 0.24 sh], 'Min', lo-1, 'Max', lo+1, 'Value', lo, 'UserData', lo);
+                hEditsMin(p) = uicontrol(planeContrastPopupFig_avg, 'Style', 'edit', 'String', formatPlaneClimPopupAvg(lo), ...
+                    'Units', 'normalized', 'Position', [0.36 y+0.01 0.08 0.055], 'FontSize', 9, 'FontWeight', 'bold', ...
+                    'ForegroundColor', fgEdA, 'BackgroundColor', bgPopA, 'HorizontalAlignment', 'right', ...
+                    'TooltipString', 'This plane multicolor min (black) CLim — type a value and press Enter', ...
+                    'Callback', @(s,e) applyPlaneClimFromPopupAvg(idx, 'min'));
+                hMinRanges(p) = uicontrol(planeContrastPopupFig_avg, 'Style', 'popupmenu', 'String', rangeOptions, 'Value', 2, ...
+                    'Units', 'normalized', 'Position', [0.45 y 0.09 ddh], 'FontSize', 9);
+                hMaxs(p) = uicontrol(planeContrastPopupFig_avg, 'Style', 'slider', 'Units', 'normalized', ...
+                    'Position', [0.56 y 0.24 sh], 'Min', hi-1, 'Max', hi+1, 'Value', hi, 'UserData', hi);
+                hEditsMax(p) = uicontrol(planeContrastPopupFig_avg, 'Style', 'edit', 'String', formatPlaneClimPopupAvg(hi), ...
+                    'Units', 'normalized', 'Position', [0.81 y+0.01 0.09 0.055], 'FontSize', 9, 'FontWeight', 'bold', ...
+                    'ForegroundColor', fgEdA, 'BackgroundColor', bgPopA, 'HorizontalAlignment', 'right', ...
+                    'TooltipString', 'This plane multicolor max (white) CLim — type a value and press Enter', ...
+                    'Callback', @(s,e) applyPlaneClimFromPopupAvg(idx, 'max'));
+                hMaxRanges(p) = uicontrol(planeContrastPopupFig_avg, 'Style', 'popupmenu', 'String', rangeOptions, 'Value', 2, ...
+                    'Units', 'normalized', 'Position', [0.91 y 0.09 ddh], 'FontSize', 9);
+                set(hMinRanges(p), 'Callback', @(s,e) updatePlaneMinRangeAvg(idx));
+                set(hMaxRanges(p), 'Callback', @(s,e) updatePlaneMaxRangeAvg(idx));
                 addlistener(hMins(p), 'Value', 'PostSet', @(s,e) syncPlaneLimitsFromPopup_avg());
                 addlistener(hMaxs(p), 'Value', 'PostSet', @(s,e) syncPlaneLimitsFromPopup_avg());
             end
             for pp = 1:P
-                updatePlaneSliderRanges_avg(pp);
+                updatePlaneMinRangeAvg(pp, false);
+                updatePlaneMaxRangeAvg(pp, false);
             end
-            uicontrol(planeContrastPopupFig_avg, 'Style', 'text', 'String', 'Black', 'Units', 'normalized', 'Position', [0.18 0.96 0.1 0.03]);
-            uicontrol(planeContrastPopupFig_avg, 'Style', 'text', 'String', 'White', 'Units', 'normalized', 'Position', [0.55 0.96 0.1 0.03]);
-            function updatePlaneSliderRanges_avg(pp)
-                lo = get(hMins(pp), 'UserData');
-                hi = get(hMaxs(pp), 'UserData');
-                baseRange = abs(hi - lo); if baseRange <= 0, baseRange = 1; end
-                multMin = rangeVals(get(hMinRanges(pp), 'Value'));
-                multMax = rangeVals(get(hMaxRanges(pp), 'Value'));
-                halfMin = baseRange * multMin;
-                halfMax = baseRange * multMax;
-                newMinLo = lo - halfMin; newMinHi = lo + halfMin;
-                newMaxLo = hi - halfMax; newMaxHi = hi + halfMax;
-                set(hMins(pp), 'Min', newMinLo, 'Max', newMinHi);
-                set(hMaxs(pp), 'Min', newMaxLo, 'Max', newMaxHi);
-                cv = get(hMins(pp), 'Value'); set(hMins(pp), 'Value', max(newMinLo, min(newMinHi, cv)));
-                cv = get(hMaxs(pp), 'Value'); set(hMaxs(pp), 'Value', max(newMaxLo, min(newMaxHi, cv)));
+            refreshPlaneClimPopupEdits_avg();
+            syncPlaneLimitsFromPopup_avg();
+            uicontrol(planeContrastPopupFig_avg, 'Style', 'text', 'String', 'Black (min)', 'Units', 'normalized', ...
+                'Position', [0.11 0.758 0.24 0.032], 'FontSize', 9);
+            uicontrol(planeContrastPopupFig_avg, 'Style', 'text', 'String', 'CLim', 'Units', 'normalized', ...
+                'Position', [0.36 0.758 0.08 0.032], 'FontSize', 8, 'HorizontalAlignment', 'center');
+            uicontrol(planeContrastPopupFig_avg, 'Style', 'text', 'String', 'White (max)', 'Units', 'normalized', ...
+                'Position', [0.56 0.758 0.24 0.032], 'FontSize', 9);
+            uicontrol(planeContrastPopupFig_avg, 'Style', 'text', 'String', 'CLim', 'Units', 'normalized', ...
+                'Position', [0.81 0.758 0.09 0.032], 'FontSize', 8, 'HorizontalAlignment', 'center');
+            function s = formatPlaneClimPopupAvg(v)
+                if ~isfinite(v), s = ''; return; end
+                x = double(v);
+                r = round(x * 10) / 10;
+                if abs(r - round(r)) < 1e-6, s = sprintf('%g', round(r)); else, s = sprintf('%.1f', r); end
+            end
+            function refreshPlaneClimPopupEdits_avg()
+                for qq = 1:P
+                    if hMins(qq) == 0 || ~isgraphics(hMins(qq)), continue; end
+                    if isgraphics(hEditsMin(qq)), set(hEditsMin(qq), 'String', formatPlaneClimPopupAvg(get(hMins(qq), 'Value'))); end
+                    if isgraphics(hEditsMax(qq)), set(hEditsMax(qq), 'String', formatPlaneClimPopupAvg(get(hMaxs(qq), 'Value'))); end
+                end
+            end
+            function updatePlaneMinRangeAvg(pp, doSync)
+                if nargin < 2 || isempty(doSync), doSync = true; end
+                defaultVal = anchorMinAvg(pp);
+                otherDefault = anchorMaxAvg(pp);
+                baseRange = abs(otherDefault - defaultVal); if baseRange <= 0, baseRange = 1; end
+                mult = rangeVals(get(hMinRanges(pp), 'Value'));
+                newHalfRange = baseRange * mult;
+                newMin = defaultVal - newHalfRange;
+                newMax = defaultVal + newHalfRange;
+                currentVal = get(hMins(pp), 'Value');
+                set(hMins(pp), 'Min', newMin, 'Max', newMax);
+                if currentVal < newMin, set(hMins(pp), 'Value', newMin);
+                elseif currentVal > newMax, set(hMins(pp), 'Value', newMax); end
+                if doSync, syncPlaneLimitsFromPopup_avg(); end
+            end
+            function updatePlaneMaxRangeAvg(pp, doSync)
+                if nargin < 2 || isempty(doSync), doSync = true; end
+                defaultVal = anchorMaxAvg(pp);
+                otherDefault = anchorMinAvg(pp);
+                baseRange = abs(otherDefault - defaultVal); if baseRange <= 0, baseRange = 1; end
+                mult = rangeVals(get(hMaxRanges(pp), 'Value'));
+                newHalfRange = baseRange * mult;
+                newMin = defaultVal - newHalfRange;
+                newMax = defaultVal + newHalfRange;
+                currentVal = get(hMaxs(pp), 'Value');
+                set(hMaxs(pp), 'Min', newMin, 'Max', newMax);
+                if currentVal < newMin, set(hMaxs(pp), 'Value', newMin);
+                elseif currentVal > newMax, set(hMaxs(pp), 'Value', newMax); end
+                if doSync, syncPlaneLimitsFromPopup_avg(); end
+            end
+            function applyPlaneClimFromPopupAvg(pp, whichEnd)
+                % Typed CLim updates the slider Value; syncPlaneLimitsFromPopup_avg then mirrors into
+                % planeContrastLimits_avg and, when Stick plane CLim is on, appState.contrastSticky.multicolorAvg.limits.
+                if ~isgraphics(hMins(pp)) || ~isgraphics(hMaxs(pp)), return; end
+                if strcmp(whichEnd, 'min')
+                    str = get(hEditsMin(pp), 'String'); hs = hMins(pp); hOther = hMaxs(pp);
+                else
+                    str = get(hEditsMax(pp), 'String'); hs = hMaxs(pp); hOther = hMins(pp);
+                end
+                val = str2double(strtrim(char(str)));
+                if ~isscalar(val) || ~isfinite(val)
+                    refreshPlaneClimPopupEdits_avg(); return;
+                end
+                loB = get(hs, 'Min'); hiB = get(hs, 'Max');
+                val = max(loB, min(hiB, val));
+                oth = get(hOther, 'Value');
+                epsGap = max(1e-12, max(abs(val), abs(oth)) * 1e-12 + 1e-15);
+                if strcmp(whichEnd, 'min')
+                    if val >= oth - epsGap, val = oth - epsGap; end
+                else
+                    if val <= oth + epsGap, val = oth + epsGap; end
+                end
+                val = max(get(hs, 'Min'), min(get(hs, 'Max'), val));
+                set(hs, 'Value', val);
                 syncPlaneLimitsFromPopup_avg();
             end
             function syncPlaneLimitsFromPopup_avg()
+                % Slider Values are the source of truth (includes values set from CLim edits). When
+                % Stick plane CLim is checked, limits are written to appState for the next average image.
                 if ~isgraphics(planeContrastPopupFig_avg), return; end
                 for pp = 1:numel(hMins)
                     if hMins(pp) == 0 || ~isgraphics(hMins(pp)), continue; end
                     planeContrastLimits_avg(pp,1) = get(hMins(pp), 'Value');
                     planeContrastLimits_avg(pp,2) = get(hMaxs(pp), 'Value');
                 end
+                refreshPlaneClimPopupEdits_avg();
+                if isgraphics(hMcAvgSticky) && get(hMcAvgSticky, 'Value')
+                    appState.contrastSticky.multicolorAvg.limits = planeContrastLimits_avg;
+                    if isgraphics(hMcAvgInvert)
+                        appState.contrastSticky.multicolorAvg.invert = logical(get(hMcAvgInvert, 'Value'));
+                    end
+                end
                 displayModeChanged_static();
             end
+            function multicolorAvgStickyToggled()
+                if ~isfield(appState.contrastSticky, 'multicolorAvg'), return; end
+                en = get(hMcAvgSticky, 'Value');
+                appState.contrastSticky.multicolorAvg.enabled = logical(en);
+                if en
+                    for pp = 1:P
+                        planeContrastLimits_avg(pp, 1) = get(hMins(pp), 'Value');
+                        planeContrastLimits_avg(pp, 2) = get(hMaxs(pp), 'Value');
+                    end
+                    appState.contrastSticky.multicolorAvg.limits = planeContrastLimits_avg;
+                    appState.contrastSticky.multicolorAvg.paletteIdx = get(hMcAvgPalette, 'Value');
+                    if isgraphics(hMcAvgInvert)
+                        appState.contrastSticky.multicolorAvg.invert = logical(get(hMcAvgInvert, 'Value'));
+                    end
+                end
+            end
+            function multicolorAvgPaletteChanged()
+                if ~isfield(appState.contrastSticky, 'multicolorAvg'), return; end
+                appState.contrastSticky.multicolorAvg.paletteIdx = get(hMcAvgPalette, 'Value');
+                invA = false;
+                if isgraphics(hMcAvgInvert), invA = logical(get(hMcAvgInvert, 'Value')); end
+                appState.contrastSticky.multicolorAvg.invert = invA;
+                planePalette_avg = applyPlanePaletteOrder(samplePlaneColorPalette(numPlanesAvg, appState.contrastSticky.multicolorAvg.paletteIdx), invA);
+                displayModeChanged_static();
+            end
+            function multicolorAvgInvertChanged()
+                if ~isfield(appState.contrastSticky, 'multicolorAvg'), return; end
+                invA = false;
+                if isgraphics(hMcAvgInvert), invA = logical(get(hMcAvgInvert, 'Value')); end
+                appState.contrastSticky.multicolorAvg.invert = invA;
+                planePalette_avg = applyPlanePaletteOrder(samplePlaneColorPalette(numPlanesAvg, get(hMcAvgPalette, 'Value')), invA);
+                displayModeChanged_static();
+            end
+        end
+    end
+
+    function opts = getPlanePaletteMenuStrings()
+        opts = {'Lines (default)','HSV','Jet','Parula','Hot','Cool','Spring','Summer','Winter','Autumn','Copper','ColorCube'};
+    end
+
+    function pal = samplePlaneColorPalette(P, styleIdx)
+        P = max(1, round(double(P)));
+        optsTag = {'lines','hsv','jet','parula','hot','cool','spring','summer','winter','autumn','copper','colorcube'};
+        styleIdx = max(1, min(numel(optsTag), round(double(styleIdx))));
+        tag = optsTag{styleIdx};
+        switch tag
+            case 'lines'
+                pal = lines(P);
+            case 'colorcube'
+                c = colorcube;
+                ix = round(linspace(1, size(c, 1), P));
+                pal = c(ix, :);
+            otherwise
+                try
+                    cmap = feval(tag, max(P, 8));
+                catch
+                    cmap = parula(max(P, 8));
+                end
+                if size(cmap, 1) < P
+                    cmap = repmat(cmap, ceil(P / size(cmap, 1)), 1);
+                end
+                ix = round(linspace(1, size(cmap, 1), P));
+                pal = cmap(ix, :);
+        end
+    end
+
+    function pal = applyPlanePaletteOrder(pal, invertOrder)
+        % Reverse row order so plane 1 uses the last sampled colormap color (etc.).
+        if invertOrder && ~isempty(pal) && size(pal, 1) > 1
+            pal = pal(end:-1:1, :);
         end
     end
 
@@ -1565,10 +1797,12 @@ updateDisplayMode();
             end
 
             planeContrastPopupFig = [];
+            hMcMovieSticky = [];
+            hMcMoviePalette = [];
+            hMcMovieInvert = [];
             planeContrastLimits = [];
             planePalette = [];
             if isMultiPlaneMovie
-                planePalette = lines(numPlanesInMovie);
                 planeContrastLimits = zeros(numPlanesInMovie, 2);
                 for p = 1:numPlanesInMovie
                     planeData = precomputedMovie(:,:,p,:);
@@ -1576,6 +1810,7 @@ updateDisplayMode();
                     if pr(1) >= pr(2), pr = [0 1]; end
                     planeContrastLimits(p,:) = pr;
                 end
+                refreshMulticolorMovieFromSession();
             end
 
             contrastHandles = createContrastControls(hMovieFig, hAxes, [0.1 0.01 0.8 0.095], modeContrasts, displayHandles, 'movie');
@@ -1860,11 +2095,37 @@ updateDisplayMode();
             tf = isscalar(v) && logical(v);
         end
 
+        function refreshMulticolorMovieFromSession()
+            % Apply session multicolor palette/invert/per-plane CLim so new players match saved session.
+            if ~isMultiPlaneMovie, return; end
+            if ~isfield(appState.contrastSticky, 'multicolorMovie'), return; end
+            M = appState.contrastSticky.multicolorMovie;
+            palIdx = 1;
+            if isfield(M, 'paletteIdx') && ~isempty(M.paletteIdx)
+                palIdx = M.paletteIdx;
+            end
+            invPalM = false;
+            if isfield(M, 'invert')
+                invPalM = logical(M.invert);
+            end
+            planePalette = applyPlanePaletteOrder(samplePlaneColorPalette(numPlanesInMovie, palIdx), invPalM);
+            if isfield(M, 'limits') && ~isempty(M.limits)
+                Lst = M.limits;
+                [nr, ~] = size(Lst);
+                for pp = 1:min(numPlanesInMovie, nr)
+                    if Lst(pp, 1) < Lst(pp, 2)
+                        planeContrastLimits(pp, :) = Lst(pp, :);
+                    end
+                end
+            end
+        end
+
         function planeFalseColorToggled()
             checked = get(hPlaneFalseColorCheckbox, 'Value');
             if checked
                 set(contrastHandles.cmapDropdown, 'Visible', 'off');
                 set(contrastHandles.invertCmap, 'Visible', 'off');
+                refreshMulticolorMovieFromSession();
                 openPlaneContrastPopup();
             else
                 set(contrastHandles.cmapDropdown, 'Visible', 'on');
@@ -1878,49 +2139,172 @@ updateDisplayMode();
         function openPlaneContrastPopup()
             if isgraphics(planeContrastPopupFig), figure(planeContrastPopupFig); return; end
             P = numPlanesInMovie;
-            planeContrastPopupFig = figure('Name', 'Plane contrast', 'NumberTitle', 'off', 'Position', [700 200 400 min(500, 80+ P*70)]);
+            figW = 640;
+            rowPx = 58;
+            headerPx = 228;
+            figH = min(820, headerPx + P * rowPx);
+            planeContrastPopupFig = figure('Name', 'Plane contrast', 'NumberTitle', 'off', ...
+                'Position', [700 200 figW figH], 'Resize', 'on');
             uicontrol(planeContrastPopupFig, 'Style', 'pushbutton', 'String', 'Pause playback', 'Units', 'normalized', ...
-                'Position', [0.02 0.92 0.35 0.06], 'Callback', @pausePlaybackFromPopup, 'FontSize', 9);
+                'Position', [0.02 0.908 0.20 0.068], 'Callback', @pausePlaybackFromPopup, 'FontSize', 10);
+            stickyVal = 0;
+            if isfield(appState.contrastSticky, 'multicolorMovie') && isfield(appState.contrastSticky.multicolorMovie, 'enabled')
+                stickyVal = double(logical(appState.contrastSticky.multicolorMovie.enabled));
+            end
+            hMcMovieSticky = uicontrol(planeContrastPopupFig, 'Style', 'checkbox', 'String', 'Stick plane CLim (session)', ...
+                'Units', 'normalized', 'Position', [0.24 0.908 0.46 0.065], 'Value', stickyVal, 'FontSize', 10, ...
+                'Callback', @(s,e) multicolorMovieStickyToggled(), ...
+                'TooltipString', ['When checked, per-plane min/max (sliders and typed CLim edits) are saved for this session ', ...
+                'and restored in new movie players. Independent of main Stick CLim.']);
+            uicontrol(planeContrastPopupFig, 'Style', 'text', 'String', 'Palette:', 'Units', 'normalized', ...
+                'Position', [0.02 0.835 0.10 0.045], 'HorizontalAlignment', 'left', 'FontSize', 10);
+            palStr = getPlanePaletteMenuStrings();
+            palIdx0 = 1;
+            if isfield(appState.contrastSticky, 'multicolorMovie') && isfield(appState.contrastSticky.multicolorMovie, 'paletteIdx')
+                palIdx0 = max(1, min(numel(palStr), round(appState.contrastSticky.multicolorMovie.paletteIdx)));
+            end
+            hMcMoviePalette = uicontrol(planeContrastPopupFig, 'Style', 'popupmenu', 'String', palStr, 'Value', palIdx0, ...
+                'Units', 'normalized', 'Position', [0.12 0.822 0.42 0.078], 'FontSize', 10, 'Callback', @(s,e) multicolorMoviePaletteChanged());
+            invM0 = 0;
+            if isfield(appState.contrastSticky, 'multicolorMovie') && isfield(appState.contrastSticky.multicolorMovie, 'invert')
+                invM0 = double(logical(appState.contrastSticky.multicolorMovie.invert));
+            end
+            hMcMovieInvert = uicontrol(planeContrastPopupFig, 'Style', 'checkbox', 'String', 'Invert palette order', ...
+                'Units', 'normalized', 'Position', [0.56 0.822 0.42 0.078], 'Value', invM0, 'FontSize', 10, ...
+                'Callback', @(s,e) multicolorMovieInvertChanged(), ...
+                'TooltipString', 'Map last colormap color to plane 1, first to top plane (swap plane-color assignment)');
             hMins = zeros(P,1); hMaxs = zeros(P,1); hMinRanges = zeros(P,1); hMaxRanges = zeros(P,1);
+            hEditsMin = zeros(P,1); hEditsMax = zeros(P,1);
+            anchorMinMc = zeros(P,1);
+            anchorMaxMc = zeros(P,1);
             rangeOptions = {'0.5x', '1x', '2x', '4x', '8x'};
             rangeVals = [0.5, 1, 2, 4, 8];
+            y0 = 0.695;
+            dy = min(0.118, 0.665 / max(P, 1));
+            sh = 0.075;
+            ddh = 0.072;
+            bgPop = get(planeContrastPopupFig, 'Color');
+            if isempty(bgPop) || numel(bgPop) < 3, bgPop = [0.94 0.94 0.94]; end
+            fgEd = ifelse(mean(bgPop(:)) < 0.45, [0.92 0.92 0.92], [0.12 0.12 0.22]);
             for p = 1:P
                 idx = p;
-                y = 1 - (p-0.5)/max(P,1);
-                uicontrol(planeContrastPopupFig, 'Style', 'text', 'String', sprintf('Plane %d', p), 'Units', 'normalized', 'Position', [0.02 y-0.03 0.15 0.06]);
+                y = y0 - (p - 1) * dy;
+                uicontrol(planeContrastPopupFig, 'Style', 'text', 'String', sprintf('Plane %d', p), 'Units', 'normalized', ...
+                    'Position', [0.02 y+0.018 0.09 0.048], 'FontSize', 10);
                 lo = planeContrastLimits(p,1); hi = planeContrastLimits(p,2);
-                hMins(p) = uicontrol(planeContrastPopupFig, 'Style', 'slider', 'Units', 'normalized', 'Position', [0.18 y 0.24 0.04], 'Min', lo-1, 'Max', lo+1, 'Value', lo, 'UserData', lo);
-                hMinRanges(p) = uicontrol(planeContrastPopupFig, 'Style', 'popupmenu', 'String', rangeOptions, 'Value', 2, 'Units', 'normalized', 'Position', [0.43 y 0.08 0.04]);
-                hMaxs(p) = uicontrol(planeContrastPopupFig, 'Style', 'slider', 'Units', 'normalized', 'Position', [0.55 y 0.24 0.04], 'Min', hi-1, 'Max', hi+1, 'Value', hi, 'UserData', hi);
-                hMaxRanges(p) = uicontrol(planeContrastPopupFig, 'Style', 'popupmenu', 'String', rangeOptions, 'Value', 2, 'Units', 'normalized', 'Position', [0.80 y 0.08 0.04]);
-                set(hMinRanges(p), 'Callback', @(s,e) updatePlaneSliderRanges(idx));
-                set(hMaxRanges(p), 'Callback', @(s,e) updatePlaneSliderRanges(idx));
+                anchorMinMc(p) = lo;
+                anchorMaxMc(p) = hi;
+                hMins(p) = uicontrol(planeContrastPopupFig, 'Style', 'slider', 'Units', 'normalized', ...
+                    'Position', [0.11 y 0.24 sh], 'Min', lo-1, 'Max', lo+1, 'Value', lo, 'UserData', lo);
+                hEditsMin(p) = uicontrol(planeContrastPopupFig, 'Style', 'edit', 'String', formatPlaneClimPopup(lo), ...
+                    'Units', 'normalized', 'Position', [0.36 y+0.01 0.08 0.055], 'FontSize', 9, 'FontWeight', 'bold', ...
+                    'ForegroundColor', fgEd, 'BackgroundColor', bgPop, 'HorizontalAlignment', 'right', ...
+                    'TooltipString', 'This plane multicolor min (black) CLim — type a value and press Enter', ...
+                    'Callback', @(s,e) applyPlaneClimFromPopupMc(idx, 'min'));
+                hMinRanges(p) = uicontrol(planeContrastPopupFig, 'Style', 'popupmenu', 'String', rangeOptions, 'Value', 2, ...
+                    'Units', 'normalized', 'Position', [0.45 y 0.09 ddh], 'FontSize', 9);
+                hMaxs(p) = uicontrol(planeContrastPopupFig, 'Style', 'slider', 'Units', 'normalized', ...
+                    'Position', [0.56 y 0.24 sh], 'Min', hi-1, 'Max', hi+1, 'Value', hi, 'UserData', hi);
+                hEditsMax(p) = uicontrol(planeContrastPopupFig, 'Style', 'edit', 'String', formatPlaneClimPopup(hi), ...
+                    'Units', 'normalized', 'Position', [0.81 y+0.01 0.09 0.055], 'FontSize', 9, 'FontWeight', 'bold', ...
+                    'ForegroundColor', fgEd, 'BackgroundColor', bgPop, 'HorizontalAlignment', 'right', ...
+                    'TooltipString', 'This plane multicolor max (white) CLim — type a value and press Enter', ...
+                    'Callback', @(s,e) applyPlaneClimFromPopupMc(idx, 'max'));
+                hMaxRanges(p) = uicontrol(planeContrastPopupFig, 'Style', 'popupmenu', 'String', rangeOptions, 'Value', 2, ...
+                    'Units', 'normalized', 'Position', [0.91 y 0.09 ddh], 'FontSize', 9);
+                set(hMinRanges(p), 'Callback', @(s,e) updatePlaneMinRangeMc(idx));
+                set(hMaxRanges(p), 'Callback', @(s,e) updatePlaneMaxRangeMc(idx));
                 addlistener(hMins(p), 'Value', 'PostSet', @(s,e) syncPlaneLimitsFromPopup());
                 addlistener(hMaxs(p), 'Value', 'PostSet', @(s,e) syncPlaneLimitsFromPopup());
             end
             for pp = 1:P
-                updatePlaneSliderRanges(pp);
+                updatePlaneMinRangeMc(pp, false);
+                updatePlaneMaxRangeMc(pp, false);
             end
-            uicontrol(planeContrastPopupFig, 'Style', 'text', 'String', 'Black', 'Units', 'normalized', 'Position', [0.18 0.96 0.1 0.03]);
-            uicontrol(planeContrastPopupFig, 'Style', 'text', 'String', 'White', 'Units', 'normalized', 'Position', [0.55 0.96 0.1 0.03]);
-            function updatePlaneSliderRanges(pp)
-                lo = get(hMins(pp), 'UserData');
-                hi = get(hMaxs(pp), 'UserData');
-                baseRange = abs(hi - lo); if baseRange <= 0, baseRange = 1; end
-                multMin = rangeVals(get(hMinRanges(pp), 'Value'));
-                multMax = rangeVals(get(hMaxRanges(pp), 'Value'));
-                halfMin = baseRange * multMin;
-                halfMax = baseRange * multMax;
-                newMinLo = lo - halfMin; newMinHi = lo + halfMin;
-                newMaxLo = hi - halfMax; newMaxHi = hi + halfMax;
-                set(hMins(pp), 'Min', newMinLo, 'Max', newMinHi);
-                set(hMaxs(pp), 'Min', newMaxLo, 'Max', newMaxHi);
-                cv = get(hMins(pp), 'Value'); set(hMins(pp), 'Value', max(newMinLo, min(newMinHi, cv)));
-                cv = get(hMaxs(pp), 'Value'); set(hMaxs(pp), 'Value', max(newMaxLo, min(newMaxHi, cv)));
+            refreshPlaneClimPopupEdits();
+            syncPlaneLimitsFromPopup();
+            uicontrol(planeContrastPopupFig, 'Style', 'text', 'String', 'Black (min)', 'Units', 'normalized', ...
+                'Position', [0.11 0.758 0.24 0.032], 'FontSize', 9);
+            uicontrol(planeContrastPopupFig, 'Style', 'text', 'String', 'CLim', 'Units', 'normalized', ...
+                'Position', [0.36 0.758 0.08 0.032], 'FontSize', 8, 'HorizontalAlignment', 'center');
+            uicontrol(planeContrastPopupFig, 'Style', 'text', 'String', 'White (max)', 'Units', 'normalized', ...
+                'Position', [0.56 0.758 0.24 0.032], 'FontSize', 9);
+            uicontrol(planeContrastPopupFig, 'Style', 'text', 'String', 'CLim', 'Units', 'normalized', ...
+                'Position', [0.81 0.758 0.09 0.032], 'FontSize', 8, 'HorizontalAlignment', 'center');
+            function s = formatPlaneClimPopup(v)
+                if ~isfinite(v), s = ''; return; end
+                x = double(v);
+                r = round(x * 10) / 10;
+                if abs(r - round(r)) < 1e-6, s = sprintf('%g', round(r)); else, s = sprintf('%.1f', r); end
+            end
+            function refreshPlaneClimPopupEdits()
+                for qq = 1:P
+                    if hMins(qq) == 0 || ~isgraphics(hMins(qq)), continue; end
+                    if isgraphics(hEditsMin(qq)), set(hEditsMin(qq), 'String', formatPlaneClimPopup(get(hMins(qq), 'Value'))); end
+                    if isgraphics(hEditsMax(qq)), set(hEditsMax(qq), 'String', formatPlaneClimPopup(get(hMaxs(qq), 'Value'))); end
+                end
+            end
+            % Match createContrastControls/updateSliderRange: stable anchors; clamp thumb when Nx shrinks.
+            function updatePlaneMinRangeMc(pp, doSync)
+                if nargin < 2 || isempty(doSync), doSync = true; end
+                defaultVal = anchorMinMc(pp);
+                otherDefault = anchorMaxMc(pp);
+                baseRange = abs(otherDefault - defaultVal); if baseRange <= 0, baseRange = 1; end
+                mult = rangeVals(get(hMinRanges(pp), 'Value'));
+                newHalfRange = baseRange * mult;
+                newMin = defaultVal - newHalfRange;
+                newMax = defaultVal + newHalfRange;
+                currentVal = get(hMins(pp), 'Value');
+                set(hMins(pp), 'Min', newMin, 'Max', newMax);
+                if currentVal < newMin, set(hMins(pp), 'Value', newMin);
+                elseif currentVal > newMax, set(hMins(pp), 'Value', newMax); end
+                if doSync, syncPlaneLimitsFromPopup(); end
+            end
+            function updatePlaneMaxRangeMc(pp, doSync)
+                if nargin < 2 || isempty(doSync), doSync = true; end
+                defaultVal = anchorMaxMc(pp);
+                otherDefault = anchorMinMc(pp);
+                baseRange = abs(otherDefault - defaultVal); if baseRange <= 0, baseRange = 1; end
+                mult = rangeVals(get(hMaxRanges(pp), 'Value'));
+                newHalfRange = baseRange * mult;
+                newMin = defaultVal - newHalfRange;
+                newMax = defaultVal + newHalfRange;
+                currentVal = get(hMaxs(pp), 'Value');
+                set(hMaxs(pp), 'Min', newMin, 'Max', newMax);
+                if currentVal < newMin, set(hMaxs(pp), 'Value', newMin);
+                elseif currentVal > newMax, set(hMaxs(pp), 'Value', newMax); end
+                if doSync, syncPlaneLimitsFromPopup(); end
+            end
+            function applyPlaneClimFromPopupMc(pp, whichEnd)
+                % Typed CLim updates the slider Value; syncPlaneLimitsFromPopup then mirrors into
+                % planeContrastLimits and, when Stick plane CLim is on, appState.contrastSticky.multicolorMovie.limits.
+                if ~isgraphics(hMins(pp)) || ~isgraphics(hMaxs(pp)), return; end
+                if strcmp(whichEnd, 'min')
+                    str = get(hEditsMin(pp), 'String'); hs = hMins(pp); hOther = hMaxs(pp);
+                else
+                    str = get(hEditsMax(pp), 'String'); hs = hMaxs(pp); hOther = hMins(pp);
+                end
+                val = str2double(strtrim(char(str)));
+                if ~isscalar(val) || ~isfinite(val)
+                    refreshPlaneClimPopupEdits(); return;
+                end
+                loB = get(hs, 'Min'); hiB = get(hs, 'Max');
+                val = max(loB, min(hiB, val));
+                oth = get(hOther, 'Value');
+                epsGap = max(1e-12, max(abs(val), abs(oth)) * 1e-12 + 1e-15);
+                if strcmp(whichEnd, 'min')
+                    if val >= oth - epsGap, val = oth - epsGap; end
+                else
+                    if val <= oth + epsGap, val = oth + epsGap; end
+                end
+                val = max(get(hs, 'Min'), min(get(hs, 'Max'), val));
+                set(hs, 'Value', val);
                 syncPlaneLimitsFromPopup();
             end
 
             function syncPlaneLimitsFromPopup()
+                % Slider Values are the source of truth (includes values set from CLim edits). When
+                % Stick plane CLim is checked, limits are written to appState for the next movie/player.
                 if ~isgraphics(planeContrastPopupFig), return; end
                 if ~isgraphics(hMovieFig) || ~isgraphics(hSeekSlider)
                     try, if isgraphics(planeContrastPopupFig), close(planeContrastPopupFig); end, catch, end
@@ -1932,6 +2316,51 @@ updateDisplayMode();
                     planeContrastLimits(pp,1) = get(hMins(pp), 'Value');
                     planeContrastLimits(pp,2) = get(hMaxs(pp), 'Value');
                 end
+                refreshPlaneClimPopupEdits();
+                if isgraphics(hMcMovieSticky) && get(hMcMovieSticky, 'Value')
+                    appState.contrastSticky.multicolorMovie.limits = planeContrastLimits;
+                    if isgraphics(hMcMovieInvert)
+                        appState.contrastSticky.multicolorMovie.invert = logical(get(hMcMovieInvert, 'Value'));
+                    end
+                end
+                currentFrameIdx = max(1, min(numMovieFrames, round(get(hSeekSlider, 'Value'))));
+                updateFrame(currentFrameIdx);
+            end
+
+            function multicolorMovieStickyToggled()
+                if ~isfield(appState.contrastSticky, 'multicolorMovie'), return; end
+                en = get(hMcMovieSticky, 'Value');
+                appState.contrastSticky.multicolorMovie.enabled = logical(en);
+                if en
+                    for pp = 1:P
+                        planeContrastLimits(pp, 1) = get(hMins(pp), 'Value');
+                        planeContrastLimits(pp, 2) = get(hMaxs(pp), 'Value');
+                    end
+                    appState.contrastSticky.multicolorMovie.limits = planeContrastLimits;
+                    appState.contrastSticky.multicolorMovie.paletteIdx = get(hMcMoviePalette, 'Value');
+                    if isgraphics(hMcMovieInvert)
+                        appState.contrastSticky.multicolorMovie.invert = logical(get(hMcMovieInvert, 'Value'));
+                    end
+                end
+            end
+
+            function multicolorMoviePaletteChanged()
+                if ~isfield(appState.contrastSticky, 'multicolorMovie'), return; end
+                appState.contrastSticky.multicolorMovie.paletteIdx = get(hMcMoviePalette, 'Value');
+                invM = false;
+                if isgraphics(hMcMovieInvert), invM = logical(get(hMcMovieInvert, 'Value')); end
+                appState.contrastSticky.multicolorMovie.invert = invM;
+                planePalette = applyPlanePaletteOrder(samplePlaneColorPalette(numPlanesInMovie, appState.contrastSticky.multicolorMovie.paletteIdx), invM);
+                currentFrameIdx = max(1, min(numMovieFrames, round(get(hSeekSlider, 'Value'))));
+                updateFrame(currentFrameIdx);
+            end
+
+            function multicolorMovieInvertChanged()
+                if ~isfield(appState.contrastSticky, 'multicolorMovie'), return; end
+                invM = false;
+                if isgraphics(hMcMovieInvert), invM = logical(get(hMcMovieInvert, 'Value')); end
+                appState.contrastSticky.multicolorMovie.invert = invM;
+                planePalette = applyPlanePaletteOrder(samplePlaneColorPalette(numPlanesInMovie, get(hMcMoviePalette, 'Value')), invM);
                 currentFrameIdx = max(1, min(numMovieFrames, round(get(hSeekSlider, 'Value'))));
                 updateFrame(currentFrameIdx);
             end
@@ -2177,9 +2606,10 @@ updateDisplayMode();
                     % Combined export settings dialog
                     kDefaultStart = round(get(hSeekSlider,'Value')); if kDefaultStart < 1, kDefaultStart = 1; end
                     kDefaultEnd = numMovieFrames;
-                    defaults = {'Native', num2str(kDefaultStart), num2str(kDefaultEnd), num2str(appState.exportGamma.mp4), num2str(appState.exportGamma.avi)};
-                    prompt = {'Resolution (Native, 1080p, Yp=square, or WxH e.g. 1920x1080):','Start frame (1-based):','End frame:','MP4 gamma:','AVI gamma:'};
-                    answ = inputdlg(prompt, 'Export settings', [1 50; 1 20; 1 20; 1 20; 1 20], defaults);
+                    defaults = {'Native', num2str(kDefaultStart), num2str(kDefaultEnd), num2str(appState.exportGamma.mp4), num2str(appState.exportGamma.avi), num2str(frameRate)};
+                    prompt = {'Resolution (Native, 1080p, Yp=square, or WxH e.g. 1920x1080):','Start frame (1-based):','End frame:','MP4 gamma:','AVI gamma:', ...
+                        'Export frame rate Hz (upsamples by interpolating; default = acquisition rate; duration unchanged at 1x/2x…)'};
+                    answ = inputdlg(prompt, 'Export settings', [1 50; 1 20; 1 20; 1 20; 1 20; 1 72], defaults);
                     if isempty(answ), if wasPlaying, start(movieTimer); end, return; end
                     % Parse resolution (arbitrary: Native, presets, Yp, WxH)
                     resChoice = strtrim(answ{1});
@@ -2195,6 +2625,11 @@ updateDisplayMode();
                     gMp4 = str2double(answ{4}); gAvi = str2double(answ{5});
                     if isfinite(gMp4) && gMp4 > 0, appState.exportGamma.mp4 = gMp4; end
                     if isfinite(gAvi) && gAvi > 0, appState.exportGamma.avi = gAvi; end
+                    exportFpsUser = str2double(answ{6});
+                    if ~isfinite(exportFpsUser) || exportFpsUser <= 0
+                        exportFpsUser = frameRate;
+                    end
+                    exportFpsUser = min(240, max(0.1, exportFpsUser));
 
                     % Determine codec from extension
                     [~,~,ext] = fileparts(savePath);
@@ -2205,9 +2640,22 @@ updateDisplayMode();
                     end
                     speedMultiplier = [0.5, 1, 2, 4, 8, 16];
                     speedVal = speedMultiplier(get(hMovieSpeedDropdown,'Value'));
-                    v.FrameRate = frameRate * speedVal;
+                    nSrc = kEnd - kStart + 1;
+                    if nSrc < 1, nSrc = 1; end
+                    T_segment_sec = nSrc / frameRate;
+                    % Match old export when export fps == acquisition: one video frame per source frame @ fps*speed
+                    fpsMatchesAcquisition = abs(exportFpsUser - frameRate) < max(1e-6 * frameRate, 1e-9);
+                    if fpsMatchesAcquisition
+                        videoTemporalUpsample = false;
+                        v.FrameRate = frameRate * speedVal;
+                        nOutFrames = nSrc;
+                    else
+                        videoTemporalUpsample = true;
+                        v.FrameRate = exportFpsUser;
+                        T_export_sec = T_segment_sec / speedVal;
+                        nOutFrames = max(1, round(T_export_sec * exportFpsUser));
+                    end
                     if isprop(v,'Quality'), v.Quality = 95; end
-                    open(v);
 
                     % Determine aspect and target size (use current zoom/pan from movie player)
                     modeOptions = get(displayHandles.modeDropdown, 'String');
@@ -2277,7 +2725,7 @@ updateDisplayMode();
                     hTextTime = []; hTextSpeed = [];
 
                     % Initialize offscreen plot and overlays
-                    firstData = getModeDataForFrame(1);
+                    firstData = getModeDataForFrame(kStart);
                     if strcmp(selectedMode,'Cells')
                         offPlot = scatter(hOffAx, generationState.physicalCoords(:,1), generationState.physicalCoords(:,2), ...
                             get(markerHandles.sizeSlider,'Value'), firstData, 'filled', 'Marker', markerHandles.shapeValues{get(markerHandles.shapeDropdown,'Value')});
@@ -2331,13 +2779,43 @@ updateDisplayMode();
                     hTextSpeed = text(hOffAx, 0.99, 0.03, '', 'Units','normalized','Color','w','FontWeight','bold','BackgroundColor','k','HorizontalAlignment','right');
                     set(hTextSpeed,'FontUnits','pixels','FontSize',overlayFontPx);
 
-                    % Render loop
-                    nOutFrames = kEnd - kStart + 1;
+                    open(v);
+
+                    % Render loop: legacy = one encoded frame per source frame; else temporal upsampling
                     hWait = waitbar(0, sprintf('Saving video... 0/%d', nOutFrames));
                     originalSliderValue = get(hSeekSlider, 'Value');
-                    for k = kStart:kEnd
-                        frameData = getModeDataForFrame(k);
-                        tSec = (k - kStart) / frameRate; tStr = sprintf('t = %.1fs', round(tSec*10)/10);
+                    for ii = 1:nOutFrames
+                        if ~videoTemporalUpsample
+                            k = kStart + ii - 1;
+                            frameData = getModeDataForFrame(k);
+                            tSec = (k - kStart) / frameRate;
+                        else
+                            if nOutFrames <= 1
+                                uu = 0;
+                            else
+                                uu = (ii - 1) / (nOutFrames - 1);
+                            end
+                            offset = uu * max(0, nSrc - 1);
+                            kLo = kStart + floor(offset);
+                            kHi = min(kEnd, kStart + ceil(offset));
+                            wBlend = offset - floor(offset);
+                            if kLo == kHi || wBlend < 1e-12
+                                frameData = getModeDataForFrame(kLo);
+                            else
+                                f1 = getModeDataForFrame(kLo);
+                                f2 = getModeDataForFrame(kHi);
+                                if strcmp(selectedMode, 'Cells')
+                                    frameData = (1 - wBlend) * double(f1(:)) + wBlend * double(f2(:));
+                                elseif ndims(f1) == 3 && size(f1, 3) == 3
+                                    frameData = (1 - wBlend) * double(f1) + wBlend * double(f2);
+                                    frameData = min(1, max(0, frameData));
+                                else
+                                    frameData = (1 - wBlend) * double(f1) + wBlend * double(f2);
+                                end
+                            end
+                            tSec = uu * T_segment_sec;
+                        end
+                        tStr = sprintf('t = %.1fs', round(tSec * 10) / 10);
                         spStr = sprintf('%gx', speedVal);
                         if strcmp(selectedMode,'Cells')
                             set(offPlot,'CData', frameData);
@@ -2398,13 +2876,15 @@ updateDisplayMode();
                             end
                         end
                         writeVideo(v, frameRGB);
-                        if ishandle(hWait), waitbar((k - kStart + 1)/nOutFrames, hWait, sprintf('Saving video... %d/%d', (k - kStart + 1), nOutFrames)); end
+                        if ishandle(hWait), waitbar(ii / nOutFrames, hWait, sprintf('Saving video... %d/%d', ii, nOutFrames)); end
                     end
                     
+                    effFps = ifelse(videoTemporalUpsample, exportFpsUser, frameRate * speedVal);
                     close(v); if ishandle(hWait), close(hWait); end
                     if isgraphics(hOffFig), close(hOffFig); end
                     updateFrame(round(originalSliderValue)); 
-                    set(hText, 'String', sprintf('Video saved to:\n%s\nOutput size: %dx%d\nFrames: %d', savePath, targetW, targetH, nOutFrames));
+                    set(hText, 'String', sprintf('Video saved to:\n%s\nOutput size: %dx%d\nFrames: %d @ %.3g fps (~%.2fs)', ...
+                        savePath, targetW, targetH, nOutFrames, effFps, nOutFrames / effFps));
                 catch ME
                     if exist('hWait','var')&&ishandle(hWait), close(hWait); end
                     try, if isgraphics(hOffFig), close(hOffFig); end, end
